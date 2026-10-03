@@ -352,3 +352,6 @@ pub fn validate_bind(address: std::net::SocketAddr) -> Result<()> {
     );
     Ok(())
 }
+
+mod service;
+pub use service::{RelayArgs, run};

@@ -12,3 +12,4 @@ axum.workspace = true
 tokio.workspace = true
 clap.workspace = true
 topicairn-protocol.workspace = true
+axum-server.workspace = true

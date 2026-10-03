@@ -59,6 +59,8 @@ Management API authentication failures are 401. Application validation failures 
 
 Build release binaries with `cargo build --release --workspace --locked`. Run Relay and each center under separate least-privilege service accounts, each with its own SQLite directory and passphrase injection. Use a supervised service such as launchd/systemd; no platform installer is included.
 
+Relay 可直接使用内置 TLS：`topicairn relay --bind 0.0.0.0:8787 --tls-cert server.pem --tls-key server-key.pem`。未提供 TLS 时拒绝非 loopback 监听。`topicairn tls-init --host <IP/DNS>` 可为受控测试生成证书；中心端点通过 `--relay-ca` 指定公开 CA。
+
 Example TLS proxy for Relay only (requires independently configured Caddy and domain/DNS):
 
 ```caddyfile

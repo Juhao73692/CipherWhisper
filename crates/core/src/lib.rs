@@ -176,11 +176,20 @@ impl Endpoint {
         label: Option<&str>,
         relay: &str,
     ) -> Result<Self> {
+        Self::open_with_ca(dir, passphrase, label, relay, None)
+    }
+    pub fn open_with_ca(
+        dir: impl AsRef<Path>,
+        passphrase: &str,
+        label: Option<&str>,
+        relay: &str,
+        relay_ca: Option<&Path>,
+    ) -> Result<Self> {
         ensure!(
             passphrase.len() >= 12,
             "use a passphrase of at least 12 bytes"
         );
-        let transport = RelayClient::new(relay)?;
+        let transport = RelayClient::with_ca(relay, relay_ca)?;
         let (mut db, lock) = storage::open(dir.as_ref())?;
         let existing: Option<String> = db
             .query_row("SELECT value FROM metadata WHERE key='salt'", [], |r| {

@@ -1,7 +1,7 @@
 use anyhow::{Result, ensure};
 use reqwest::{Client, Method, Url};
 use serde::de::DeserializeOwned;
-use std::time::Duration;
+use std::{path::Path, time::Duration};
 use topicairn_protocol::RequestAuth;
 
 #[derive(Clone)]
@@ -11,6 +11,9 @@ pub struct RelayClient {
 }
 impl RelayClient {
     pub fn new(base: &str) -> Result<Self> {
+        Self::with_ca(base, None)
+    }
+    pub fn with_ca(base: &str, ca: Option<&Path>) -> Result<Self> {
         let url = Url::parse(base)?;
         ensure!(
             url.username().is_empty()
@@ -31,10 +34,19 @@ impl RelayClient {
             url.scheme() == "https" || (url.scheme() == "http" && loopback),
             "remote relay requires HTTPS"
         );
-        let http = Client::builder()
+        let mut builder = Client::builder()
             .timeout(Duration::from_secs(15))
-            .redirect(reqwest::redirect::Policy::none())
-            .build()?;
+            .redirect(reqwest::redirect::Policy::none());
+        if let Some(path) = ca {
+            ensure!(
+                url.scheme() == "https",
+                "--relay-ca requires an HTTPS relay URL"
+            );
+            let pem = std::fs::read(path)?;
+            ensure!(pem.len() <= 256 * 1024, "relay CA file too large");
+            builder = builder.add_root_certificate(reqwest::Certificate::from_pem(&pem)?);
+        }
+        let http = builder.build()?;
         Ok(Self {
             base: base.trim_end_matches('/').into(),
             http,

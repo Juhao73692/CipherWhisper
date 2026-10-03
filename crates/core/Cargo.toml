@@ -24,3 +24,5 @@ tokio.workspace = true
 tempfile = "3"
 topicairn-relay.workspace = true
 axum.workspace = true
+rcgen.workspace = true
+axum-server.workspace = true

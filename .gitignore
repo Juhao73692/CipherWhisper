@@ -12,3 +12,7 @@ admin.token
 __pycache__/
 *.pyc
 .DS_Store
+
+/dist/
+/relay-tls/
+server-key.pem

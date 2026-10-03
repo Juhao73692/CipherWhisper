@@ -488,3 +488,59 @@ async fn network_failure_preserves_exact_ciphertext_for_retry() -> Result<()> {
     assert_eq!(bob.messages(&topic.id)?.len(), 1);
     Ok(())
 }
+
+#[tokio::test]
+async fn tls_ca_and_hostname_verification_are_enforced() -> Result<()> {
+    use rcgen::{
+        BasicConstraints, CertificateParams, CertifiedIssuer, IsCa, KeyPair, KeyUsagePurpose,
+    };
+    let root = TempDir::new()?;
+    let mut ca_params = CertificateParams::new(Vec::<String>::new())?;
+    ca_params.is_ca = IsCa::Ca(BasicConstraints::Constrained(0));
+    ca_params.key_usages = vec![KeyUsagePurpose::KeyCertSign];
+    let ca = CertifiedIssuer::self_signed(ca_params, KeyPair::generate()?)?;
+    let server_key = KeyPair::generate()?;
+    // A DNS SAN for localhost only, deliberately without the numeric loopback IP.
+    let cert = CertificateParams::new(vec!["localhost".into()])?.signed_by(&server_key, &ca)?;
+    let ca_path = root.path().join("ca.pem");
+    std::fs::write(&ca_path, ca.pem())?;
+    let config = axum_server::tls_rustls::RustlsConfig::from_pem(
+        format!("{}{}", cert.pem(), ca.pem()).into_bytes(),
+        server_key.serialize_pem().into_bytes(),
+    )
+    .await?;
+    let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+    let port = listener.local_addr()?.port();
+    listener.set_nonblocking(true)?;
+    let app = topicairn_relay::router(root.path().join("relay.sqlite"))?;
+    let task = tokio::spawn(async move {
+        axum_server::tls_rustls::from_tcp_rustls(listener, config)
+            .unwrap()
+            .serve(app.into_make_service())
+            .await
+            .unwrap();
+    });
+    let domain = Endpoint::open(root.path().join("domain"), PASS, Some("TLS"), RELAY)?;
+    let auth = domain.request_auth("GET", "/health", &[])?;
+    let url = format!("https://localhost:{port}");
+    let good = RelayClient::with_ca(&url, Some(&ca_path))?;
+    let result: serde_json::Value = good.request("GET", "/health", vec![], auth.clone()).await?;
+    assert_eq!(result["status"], "ok");
+    assert!(
+        RelayClient::new(&url)?
+            .request::<serde_json::Value>("GET", "/health", vec![], auth.clone())
+            .await
+            .is_err()
+    );
+    let wrong_host = RelayClient::with_ca(&format!("https://127.0.0.1:{port}"), Some(&ca_path))?;
+    assert!(
+        wrong_host
+            .request::<serde_json::Value>("GET", "/health", vec![], auth)
+            .await
+            .is_err()
+    );
+    assert!(RelayClient::with_ca(RELAY, Some(&ca_path)).is_err());
+    task.abort();
+    let _ = task.await;
+    Ok(())
+}

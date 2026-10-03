@@ -23,6 +23,12 @@ Alice Trust Domain center  ── authenticated E2EE ──  Bob Trust Domain ce
 - 持久化离线队列、游标分页、幂等发送、接收去重、持久化后 ACK、送达状态、指数退避重试。
 - 无界面的中心端点服务、密文 Relay、管理 CLI；两个中心端点共用一个简单 Relay。
 
+## 单文件 macOS 版本
+
+运行 `./scripts/package-macos.sh` 构建 `dist/topicairn`：Universal arm64 + x86_64，最低 macOS 13，只需要 macOS 系统库。一个可执行文件包含 `relay`、`serve`、`admin`、`tls-init`，无需用户安装 Rust、Node 或反向代理。打包步骤会生成本地 ad-hoc 签名、SHA-256 校验和及附带使用指南的 tar.gz。
+
+两台电脑的完整操作步骤见 [macOS 测试指南](docs/macos-testing.md)。Relay 可使用内置 HTTPS，`tls-init` 生成测试 CA 和服务器证书；中心端点使用 `--relay-ca ca.pem` 信任该 CA，继续验证证书和主机名。测试 TLS 私钥不会进入 Git。
+
 ## 工具版本
 
 2026-10-03 核对并安装的最新稳定工具：Rust/Cargo **1.99.0**（Rust 2024 edition），rustup **1.29.1**，Node **26.10.0 Current**，npm **12.2.0**，pnpm **12.8.1**。
@@ -37,6 +43,7 @@ cargo test --workspace --locked
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo fmt --all -- --check
 python3 scripts/smoke.py
+python3 scripts/smoke.py --binary target/debug/topicairn --tls
 ```
 
 测试需要允许 localhost TCP 监听。`smoke.py` 使用临时数据目录和动态端口，启动 Alice 中心端点、Bob 中心端点、Relay 三个真实进程，验证离线首次发送、双 Topic、ACK、三方重启、回复及网络恢复；结束时停止全部测试进程并删除测试数据。
@@ -47,7 +54,7 @@ python3 scripts/smoke.py
 ./target/debug/topicairn-relay --bind 127.0.0.1:8787 --database relay.sqlite
 ```
 
-Relay 默认并且强制只监听 loopback。跨计算机使用时，在 Relay 前配置 HTTPS 反向代理；中心端点对非 loopback Relay 强制 HTTPS。不要把中心端点管理 API 暴露到公网。
+Relay 默认以 HTTP 只监听 loopback。提供 `--tls-cert` 和 `--tls-key` 时，可以使用内置 HTTPS 监听局域网地址；也可保留 loopback HTTP 并在前面配置 HTTPS 反向代理。中心端点对非 loopback Relay 强制 HTTPS。中心端点管理 API 只监听本机。
 
 ## 两个中心端点示例
 
@@ -115,6 +122,7 @@ EOF_CONFIG
 | `server/relay` | 只处理公钥和 opaque ciphertext 的持久化路由服务 |
 | `server/domain` | 中心端点守护进程及 loopback 管理 API |
 | `apps/cli` | 中心端点的无界面管理工具 |
+| `apps/topicairn` | 统一单文件入口和测试 TLS 证书生成 |
 
 更多说明：[架构](docs/architecture.md)、[协议](docs/protocol.md)、[安全模型](docs/security.md)、[接口](docs/api.md)。
 

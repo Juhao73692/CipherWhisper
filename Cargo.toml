@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/protocol", "crates/core", "server/relay", "apps/cli", "server/domain"]
+members = ["crates/protocol", "crates/core", "server/relay", "apps/cli", "server/domain", "apps/topicairn"]
 
 [workspace.package]
 version = "0.1.0"
@@ -23,6 +23,10 @@ clap = { version = "4", features = ["derive", "env"] }
 topicairn-protocol = { path = "crates/protocol" }
 topicairn-core = { path = "crates/core" }
 topicairn-relay = { path = "server/relay" }
+topicairn-domain = { path = "server/domain" }
+topicairn-cli = { path = "apps/cli" }
+axum-server = { version = "0.8", features = ["tls-rustls"] }
+rcgen = "0.14.10"
 
 [profile.release]
 lto = "thin"

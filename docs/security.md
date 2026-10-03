@@ -34,7 +34,7 @@ Relay HTTP 认证签名绑定 method、完整 path/query、精确 body SHA-256�
 
 只有收件人能够读取自己的 inbox/ACK，只有发送者可以读取对应 delivery state。第三方不能冒用公开 user_id 清空队列。ACK 表示对端中心已持久化消息，不表示人已读。
 
-非 loopback Relay URL 强制 HTTPS，HTTP redirect 禁止。MVP Relay 自身绑定 loopback，部署时通过 TLS 反向代理。管理 API 的随机 256-bit bearer token 仅用于本机，恒定时间比较其摘要，默认不启用 CORS。
+非 loopback Relay URL 强制 HTTPS，HTTP redirect 禁止。Relay 未配置 TLS 时只允许 loopback；配置 `--tls-cert`/`--tls-key` 后支持内置 HTTPS 的远程监听，也可使用 TLS 反向代理。自签发测试 CA 通过 `--relay-ca` 显式提供给客户端，不禁用证书/主机名验证，不修改系统信任库。管理 API 的随机 256-bit bearer token 仅用于本机，恒定时间比较其摘要，默认不启用 CORS。
 
 ## Relay 可见信息及可作恶范围
 
