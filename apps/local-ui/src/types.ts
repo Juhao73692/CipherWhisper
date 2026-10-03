@@ -68,6 +68,7 @@ export type Pairing = {
   signature: string;
 };
 export type Status = {
+  transport?: 'direct' | 'relay' | 'device';
   protocol: number;
   lastSync: Report | null;
   mode?: 'server' | 'client';

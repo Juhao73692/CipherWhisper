@@ -1,4 +1,6 @@
-# Topicairn：两台 Mac 测试指南
+# 可选旧 Relay 模式：Topicairn：两台 Mac 测试指南
+
+当前默认是无 Relay 的直接 P2P，使用 [直接 P2P 指南](p2p-testing.md)。本文仅适用于显式指定 `--relay` 的旧兼容模式。
 
 `topicairn` 是一个 Universal macOS 命令行可执行文件，包含 Apple Silicon arm64 和 Intel x86_64 两个架构，最低 macOS 13。运行时不需要安装 Rust、Node、Homebrew、SQLite、Caddy 或 OpenSSL；它只链接 macOS 系统库。
 
@@ -177,7 +179,7 @@ B：
 
 界面有三栏：联系人、话题、对话。可以在左下角下载公开身份卡，通过联系人 `＋` 导入对方，点话题 `＋` 创建独立对话。支持编写/预览、公式与代码高亮、回复、查看原文、本地搜索、重命名、归档和恢复。按 `⌘/Ctrl + Enter` 发送。已经完成前面的 CLI 身份交换时，直接使用已有联系人和历史即可。刷新页面会锁定并清除内存草稿，历史仍保存在 SQLite。
 
-端口 8790 是各自本机管理 API，自动同步默认每 5 秒一次，不需两台电脑互相访问这个端口。只有 HTTPS Relay 的 8787 需要跨电脑可达。域内设备传输没有实现。
+端口 8790 是各自本机管理 API，自动同步默认每 5 秒一次，不需两台电脑互相访问这个端口。仅此旧模式需要 HTTPS Relay 的 8787 跨电脑可达。域内设备可另行启用，见 [设备同步](device-sync.md)。
 
 同一数据目录的 serve 和 admin 不能同时打开；想用 ta/tb 就先 Ctrl-C 停止 serve，或通过 UI / 本机管理 API 发送。例如 A 的另一个终端：
 

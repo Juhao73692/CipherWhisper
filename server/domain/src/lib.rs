@@ -23,6 +23,7 @@ use topicairn_protocol::*;
 use zeroize::Zeroizing;
 mod client;
 mod device_server;
+mod peer_server;
 mod ui;
 mod workspace;
 pub use client::{ClientArgs, DeviceInitArgs, init_device, run_client};
@@ -39,11 +40,24 @@ pub struct DomainArgs {
     pub data: PathBuf,
     #[arg(long)]
     pub name: Option<String>,
-    #[arg(long, default_value = "http://127.0.0.1:8787")]
-    pub relay: String,
-    /// Trust this PEM CA for the relay HTTPS connection (does not disable verification).
+    /// Optional legacy relay transport. Default is direct P2P, without a relay.
     #[arg(long)]
+    pub relay: Option<String>,
+    /// Trust this PEM CA for the relay HTTPS connection (does not disable verification).
+    #[arg(long, requires = "relay")]
     pub relay_ca: Option<PathBuf>,
+    /// Direct peer listener, independent of the local UI and device ports.
+    #[arg(long, default_value = "127.0.0.1:8800", conflicts_with = "relay")]
+    pub peer_bind: std::net::SocketAddr,
+    /// Advertised direct origin; required for remote HTTPS listeners.
+    #[arg(long, conflicts_with = "relay")]
+    pub peer_url: Option<String>,
+    #[arg(long, requires_all=["peer_tls_key","peer_ca"], conflicts_with="relay")]
+    pub peer_tls_cert: Option<PathBuf>,
+    #[arg(long, requires_all=["peer_tls_cert","peer_ca"], conflicts_with="relay")]
+    pub peer_tls_key: Option<PathBuf>,
+    #[arg(long, requires_all=["peer_tls_cert","peer_tls_key"], conflicts_with="relay")]
+    pub peer_ca: Option<PathBuf>,
     #[arg(long, default_value = "127.0.0.1:8790")]
     pub bind: std::net::SocketAddr,
     #[arg(
@@ -247,8 +261,43 @@ async fn outbox(State(state): State<AppState>) -> Api<serde_json::Value> {
 async fn status(State(state): State<AppState>) -> Json<serde_json::Value> {
     let workspace = state.domain.lock().await;
     Json(
-        serde_json::json!({"protocol":VERSION,"mode":workspace.mode(),"device":workspace.device_info().ok().flatten(),"deviceServer":state.device_config.as_ref().map(|c|&c.server),"lastSync":*state.last_sync.lock().await}),
+        serde_json::json!({"protocol":VERSION,"mode":workspace.mode(),"transport":workspace.transport_kind(),"device":workspace.device_info().ok().flatten(),"deviceServer":state.device_config.as_ref().map(|c|&c.server),"lastSync":*state.last_sync.lock().await}),
     )
+}
+async fn peer_profile(State(state): State<AppState>) -> Api<topicairn_protocol::p2p::PeerProfile> {
+    Ok(Json(state.domain.lock().await.center()?.direct_profile()?))
+}
+async fn peer_routes(State(state): State<AppState>) -> Api<serde_json::Value> {
+    Ok(Json(
+        serde_json::to_value(state.domain.lock().await.center()?.direct_peers()?)
+            .map_err(anyhow::Error::from)?,
+    ))
+}
+async fn import_direct_peer(
+    State(state): State<AppState>,
+    Json(profile): Json<topicairn_protocol::p2p::PeerProfile>,
+) -> Api<serde_json::Value> {
+    state
+        .domain
+        .lock()
+        .await
+        .center()?
+        .add_direct_peer(profile)?;
+    Ok(Json(serde_json::json!({"ok":true})))
+}
+async fn check_direct_peer(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Api<ContactCard> {
+    Ok(Json(
+        state
+            .domain
+            .lock()
+            .await
+            .center()?
+            .check_direct_peer(&id)
+            .await?,
+    ))
 }
 async fn devices(State(state): State<AppState>) -> Api<serde_json::Value> {
     let mut w = state.domain.lock().await;
@@ -317,13 +366,52 @@ pub async fn run(args: DomainArgs) -> Result<()> {
         None
     };
     let passphrase = Zeroizing::new(args.passphrase);
-    let domain = Endpoint::open_with_ca(
-        &args.data,
-        &passphrase,
-        args.name.as_deref(),
-        &args.relay,
-        args.relay_ca.as_deref(),
-    )?;
+    let mut domain = if let Some(relay) = &args.relay {
+        Endpoint::open_with_ca(
+            &args.data,
+            &passphrase,
+            args.name.as_deref(),
+            relay,
+            args.relay_ca.as_deref(),
+        )?
+    } else {
+        Endpoint::open_direct(&args.data, &passphrase, args.name.as_deref())?
+    };
+    let peer_server = if domain.is_direct() {
+        ensure!(
+            args.peer_bind.ip().is_loopback() || args.peer_tls_cert.is_some(),
+            "remote P2P listener requires TLS"
+        );
+        let listener = std::net::TcpListener::bind(args.peer_bind)?;
+        listener.set_nonblocking(true)?;
+        let address = listener.local_addr()?;
+        let url = args.peer_url.unwrap_or_else(|| format!("http://{address}"));
+        let (tls, ca) = if let Some(cert) = args.peer_tls_cert {
+            ensure!(
+                url.starts_with("https://"),
+                "TLS peer listener requires --peer-url https://..."
+            );
+            (
+                Some(device_server::tls(&cert, args.peer_tls_key.as_ref().unwrap()).await?),
+                Some(std::fs::read_to_string(args.peer_ca.as_ref().unwrap())?),
+            )
+        } else {
+            ensure!(
+                url.starts_with("http://"),
+                "HTTPS peer URL requires TLS credentials"
+            );
+            (None, None)
+        };
+        domain.set_direct_address(&url, ca.as_deref())?;
+        println!("Direct P2P: {url}");
+        Some(peer_server::PeerServer {
+            listener,
+            tls,
+            ingress: domain.direct_ingress()?,
+        })
+    } else {
+        None
+    };
     drop(passphrase);
     serve_workspace(
         args.data,
@@ -332,6 +420,7 @@ pub async fn run(args: DomainArgs) -> Result<()> {
         args.open,
         Workspace::Center(domain),
         remote,
+        peer_server,
     )
     .await
 }
@@ -342,6 +431,7 @@ async fn serve_workspace(
     open: bool,
     domain: Workspace,
     remote: Option<Remote>,
+    peer_server: Option<peer_server::PeerServer>,
 ) -> Result<()> {
     ensure!(
         bind.ip().is_loopback(),
@@ -376,6 +466,9 @@ async fn serve_workspace(
         .route("/sync", post(sync))
         .route("/outbox", get(outbox))
         .route("/status", get(status))
+        .route("/p2p/contact", get(peer_profile))
+        .route("/p2p/peers", get(peer_routes).post(import_direct_peer))
+        .route("/p2p/peers/{id}/check", post(check_direct_peer))
         .route("/devices", get(devices).post(enroll))
         .route("/devices/{id}/revoke", post(revoke))
         .route("/device-pending", get(device_pending))
@@ -417,6 +510,7 @@ async fn serve_workspace(
         }
     }
     let (shutdown, mut stop) = watch::channel(false);
+    let peer_task = peer_server.map(|server| server.start(stop.clone()));
     let signal_shutdown = shutdown.clone();
     let signal_handle = handle.clone();
     let worker = tokio::spawn(async move {
@@ -453,6 +547,9 @@ async fn serve_workspace(
         handle.graceful_shutdown(Some(Duration::from_secs(10)));
     }
     worker.await?;
+    if let Some(task) = peer_task {
+        task.await??;
+    }
     if let Some(task) = remote_task {
         task.await??;
     }

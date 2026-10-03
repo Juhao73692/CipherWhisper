@@ -1,4 +1,5 @@
 use clap::{Parser, Subcommand};
+mod local_test;
 mod tls;
 #[derive(Parser)]
 #[command(
@@ -12,10 +13,12 @@ struct Args {
 }
 #[derive(Subcommand)]
 enum Command {
+    /// Start two temporary P2P chat instances, pair them, and optionally open both UIs.
+    LocalTest(local_test::Args),
     /// Run an opaque ciphertext relay. Remote binds require TLS.
     Relay(topicairn_relay::RelayArgs),
     /// Run this computer's Trust Domain center and embedded local UI (--open).
-    Serve(topicairn_domain::DomainArgs),
+    Serve(Box<topicairn_domain::DomainArgs>),
     /// Create an independent internal device identity; share only its public JSON card.
     DeviceInit(topicairn_domain::DeviceInitArgs),
     /// Pull center history and send through an authorized encrypted device connection.
@@ -28,8 +31,9 @@ enum Command {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     match Args::parse().command {
+        Command::LocalTest(args) => local_test::run(args).await,
         Command::Relay(args) => topicairn_relay::run(args).await,
-        Command::Serve(args) => topicairn_domain::run(args).await,
+        Command::Serve(args) => topicairn_domain::run(*args).await,
         Command::DeviceInit(args) => topicairn_domain::init_device(args),
         Command::Connect(args) => topicairn_domain::run_client(args).await,
         Command::Admin(args) => topicairn_cli::run(args).await,

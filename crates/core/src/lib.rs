@@ -1,5 +1,6 @@
 //! Trust Domain center and separately keyed internal device replicas.
 pub mod device;
+pub mod direct;
 pub mod domain_sync;
 mod storage;
 pub mod transport;
@@ -22,7 +23,7 @@ pub struct Endpoint {
     db: Connection,
     key: Zeroizing<[u8; 32]>,
     _lock: File,
-    transport: RelayClient,
+    transport: Option<RelayClient>,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -187,11 +188,33 @@ impl Endpoint {
         relay: &str,
         relay_ca: Option<&Path>,
     ) -> Result<Self> {
+        Self::open_transport(
+            dir,
+            passphrase,
+            label,
+            Some(RelayClient::with_ca(relay, relay_ca)?),
+        )
+    }
+    pub fn open_direct(
+        dir: impl AsRef<Path>,
+        passphrase: &str,
+        label: Option<&str>,
+    ) -> Result<Self> {
+        let mut endpoint = Self::open_transport(dir, passphrase, label, None)?;
+        direct::initialize(&endpoint.db)?;
+        endpoint.refresh_direct_prekeys()?;
+        Ok(endpoint)
+    }
+    fn open_transport(
+        dir: impl AsRef<Path>,
+        passphrase: &str,
+        label: Option<&str>,
+        transport: Option<RelayClient>,
+    ) -> Result<Self> {
         ensure!(
             passphrase.len() >= 12,
             "use a passphrase of at least 12 bytes"
         );
-        let transport = RelayClient::with_ca(relay, relay_ca)?;
         let (mut db, lock) = storage::open(dir.as_ref())?;
         ensure!(
             !db.query_row(
@@ -370,9 +393,16 @@ impl Endpoint {
         body: Vec<u8>,
     ) -> Result<T> {
         let auth = self.request_auth(method, path, &body)?;
-        self.transport.request(method, path, body, auth).await
+        self.transport
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("this center uses direct P2P"))?
+            .request(method, path, body, auth)
+            .await
     }
     pub async fn publish(&mut self) -> Result<()> {
+        if self.is_direct() {
+            return self.refresh_direct_prekeys();
+        }
         let upload = self.prekey_upload()?;
         let body = serde_json::to_vec(&upload)?;
         let _: serde_json::Value = self.request("POST", "/prekeys", body).await?;
@@ -406,6 +436,12 @@ impl Endpoint {
     async fn ensure_session(&mut self, peer: &str) -> Result<()> {
         self.peer(peer)?;
         if load_session(&self.db, peer, None, &self.key)?.is_none() {
+            if self.is_direct() {
+                let bundle = self
+                    .direct_request(peer, "POST", "/p2p/v1/prekeys/claim", vec![])
+                    .await?;
+                return self.establish(peer, bundle);
+            }
             let path = format!("/prekeys/{peer}/claim");
             let bundle: PrekeyBundle = self.request("POST", &path, vec![]).await?;
             self.establish(peer, bundle)?;
@@ -700,6 +736,9 @@ impl Endpoint {
     }
     /// Retries reuse committed ciphertext. ACK occurs only after durable local commit.
     pub async fn sync(&mut self, force: bool) -> Result<SyncReport> {
+        if self.is_direct() {
+            return self.sync_direct(force).await;
+        }
         let mut report = SyncReport::default();
         let published = if let Err(e) = self.publish().await {
             report.errors.push(format!("prekeys: {e}"));

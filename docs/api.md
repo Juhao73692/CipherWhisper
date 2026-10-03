@@ -1,6 +1,32 @@
 # API reference
 
-## Opaque Relay API
+## Default direct Peer API
+
+`serve` defaults to direct P2P, without `--relay`. Separate P2P listener defaults to `127.0.0.1:8800`; loopback UI/admin defaults to `127.0.0.1:8790`. Remote P2P requires TLS; setup and two-instance testing: [p2p-testing.md](p2p-testing.md).
+
+The loopback Bearer-authenticated API adds:
+
+| Method/path | Body/result |
+|---|---|
+| `GET /p2p/contact` | This center's signed PeerProfile (identity + address + optional CA) |
+| `GET /p2p/peers` | Imported signed PeerProfiles |
+| `POST /p2p/peers` | Import verified PeerProfile; pins identity and updates route |
+| `POST /p2p/peers/{user_id}/check` | Empty JSON body; mutually authenticated ping, returns pinned ContactCard |
+
+These configuration routes belong to center mode; devices do not own external routes. `GET /status` includes `transport:"direct"|"relay"|"device"`. Existing `/identity` and `/peers` remain bare ContactCard APIs; bare cards alone have no direct route. Configure the PeerProfile on the center before devices send to a new external Peer.
+
+Remote P2P listener exposes only:
+
+| Method/path | Result data inside signed PeerResponse |
+|---|---|
+| `POST /p2p/v1/ping` | ContactCard; empty request body |
+| `POST /p2p/v1/prekeys/claim` | PrekeyBundle; empty request body; atomic one-time consumption |
+| `POST /p2p/v1/messages` | Delivery after storing signed Envelope addressed to this center |
+| `GET /p2p/v1/messages/{id}` | Delivery; only original sender; confirmed after decryption/commit |
+
+All require the five `x-peer-*` headers and signed target-bound request detailed in [protocol.md](protocol.md). Responses bind identity, request nonce and complete result. Unknown/expired/replayed authentication returns generic 401; invalid envelope/body/ID/capacity errors return 400. No third-party forwarding, public discovery, browser CORS, plaintext history, Topic, search or admin routes. First connection needs both peers online; established sessions can queue locally while offline.
+
+## Optional legacy opaque Relay API
 
 All routes except health require the four `x-td-*` signed-request headers described in [protocol.md](protocol.md). The Relay computes the authenticated user from the signing public key.
 
@@ -56,7 +82,7 @@ Message return shape:
 {"id":"uuid","topicId":"uuid","senderId":"td_...","timestamp":0,"body":"$x^2$","format":"markdown","replyTo":null,"delivery":"queued"}
 ```
 
-All API content is source text. The embedded local Svelte UI renders it with markdown-it / KaTeX / Shiki and final DOMPurify sanitization. Sending to an archived Topic is rejected; explicitly unarchive first. Sending can fail if the first session needs a Relay that is unavailable or has no prekeys. After session establishment, local sends can queue while Relay is offline.
+All API content is source text. The embedded local Svelte UI renders it with markdown-it / KaTeX / Shiki and final DOMPurify sanitization. Sending to an archived Topic is rejected; explicitly unarchive first. Default direct P2P requires the peer online for first-session prekey claim; after session establishment, sends queue locally while the peer is offline. Only explicit legacy `--relay` mode uses Relay prekeys/queue.
 
 Public UI routes: `GET /` / `GET /index.html` and embedded `/assets/*`; they contain no local secrets or history. `POST /ui/session {code}` exchanges a single-use, 90-second bootstrap code for an in-memory browser token (401 when expired/used/invalid). `serve --open` sends this code to the browser via URL fragment, never the permanent admin token. Browser tokens expire on server restart; page reload requires another unlock.
 
@@ -76,11 +102,11 @@ Enabled only with all `--device-*` options. TLS 1.3 only; device-signed native r
 | `POST /device/v1/ack` | `{epoch,cursor}` | Ack; cannot exceed served cursor; per-device, no shared-history deletion |
 | `POST /device/v1/commands` | `{id,operation}` | CommandReply; durable accepted/rejected receipt, exact command retry idempotent |
 
-Enrolled devices have full history and conversation write access, with no right to manage enrollment. Data is JSON inside authenticated TLS; it is never plaintext on the network. This is domain-owned history, separate from the opaque external Relay payload. TLS endpoints are center/device; the Relay never sees this traffic. Operational guide: [device-sync.md](device-sync.md).
+Enrolled devices have full history and conversation write access, with no right to manage enrollment. Data is JSON inside authenticated TLS; it is never plaintext on the network. This is domain-owned history, separate from opaque external Peer messages. TLS endpoints are center/device; no third-party transport participates. Operational guide: [device-sync.md](device-sync.md).
 
 ## Deployment
 
-Build release binaries with `cargo build --release --workspace --locked`. Run Relay and each center under separate least-privilege service accounts, each with its own SQLite directory and passphrase injection. Use a supervised service such as launchd/systemd; no platform installer is included.
+Build release binaries with `cargo build --release --workspace --locked`. Default centers connect directly; configure a separate TLS P2P listener as in [p2p-testing.md](p2p-testing.md). If explicitly using legacy Relay, run it and each center under separate least-privilege service accounts, each with its own SQLite directory and passphrase injection. Use a supervised service such as launchd/systemd; no platform installer is included.
 
 Relay 可直接使用内置 TLS：`topicairn relay --bind 0.0.0.0:8787 --tls-cert server.pem --tls-key server-key.pem`。未提供 TLS 时拒绝非 loopback 监听。`topicairn tls-init --host <IP/DNS>` 可为受控测试生成证书；中心端点通过 `--relay-ca` 指定公开 CA。
 

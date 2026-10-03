@@ -2336,7 +2336,10 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "getrandom 0.4.3",
+ "hex",
  "rcgen",
+ "reqwest",
  "serde_json",
  "time",
  "tokio",
@@ -2344,6 +2347,7 @@ dependencies = [
  "topicairn-domain",
  "topicairn-protocol",
  "topicairn-relay",
+ "uuid",
  "zeroize",
 ]
 

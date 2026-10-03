@@ -6,24 +6,26 @@
 
 1. **Local Trust**：本机管理 token、目录权限、数据库、服务生命周期；独立设备身份、中心授权/撤销、TLS 1.3 连接和增量同步。管理接口仅 loopback。
 2. **Identity**：Ed25519 身份指纹、签名 Contact Card、固定 X25519 公钥和签名 prekeys。不存在由 Relay 替你决定 Peer 身份的隐式 TOFU。
-3. **Peer Transport**：签名 Envelope、Olm 3DH/Double Ratchet、Relay Queue、游标、幂等发送、重试、去重、ACK。
+3. **Peer Transport**：签名 Envelope、Olm 3DH/Double Ratchet、直接 P2P、本地密文队列、幂等发送、重试、去重和签名送达确认。旧 Relay 是显式可选适配器。
 4. **Conversation**：Topic、Markdown 源码、reply、topic.update。全部在加密 Payload 中。
 
 ## 第一阶段拓扑
 
 ```text
-Alice center -> shared ciphertext relay <- Bob center
+Alice center <-> direct authenticated E2EE <-> Bob center
 ```
 
-双方中心端点均主动连接 Relay，解决 NAT/离线排队。Relay 不是任一方的解密端点。所有密钥交换的数学实现、会话消息密钥派生、ratchet 和随机数生成来自成熟库。
+`serve` 默认直连，无 Relay。对端独立 P2P 监听只接受固定 Peer 发给自己的密文，不转发第三方消息。首次握手需双方在线；已有会话可在发送方本地排队。远程仅 HTTPS/TLS 1.3，loopback 测试允许 HTTP。双方通过签名 `.peer.json` 交换身份、地址和可选 CA；身份不依赖地址。所有密钥交换的数学实现、会话消息密钥派生、ratchet 和随机数生成来自成熟库。
 
 ## 事务与崩溃恢复
 
 发送事务：加载持久化 session → 在临时 session 上 encrypt → 保存新 session + 完整不可变 Envelope + 本地消息 → SQLite commit。网络发送发生在提交之后。失败重试复用完全相同的 Envelope，不重新 encrypt。
 
-接收事务：验证固定 Peer 签名和收件人 → 从已保存状态加载临时 account/session → decrypt → 校验 Payload 与外层路由绑定 → 校验 Topic 所属、消息 ID、reply → 保存新 account/session + 消息 + 接收去重记录 + 待 ACK → commit。然后才 ACK Relay。
+接收事务：验证固定 Peer 签名和收件人 → 从已保存状态加载临时 account/session → decrypt → 校验 Payload 与外层路由绑定 → 校验 Topic 所属、消息 ID、reply → 保存新 account/session + 消息 + 接收去重记录 + 待 ACK → commit。之后才能签名返回 `acknowledged:true`。旧 Relay 模式则在提交后向 Relay ACK。
 
-验证或提交失败时，临时状态被丢弃，原 ratchet 不变。接收端提交后在 ACK 前崩溃，重投递命中去重表并重新 ACK。发送成功但响应丢失，Relay 用 Envelope ID + digest 幂等处理。Relay ACK 后删除原密文，保留指纹 tombstone，避免重试重新入队。
+验证或提交失败时，临时状态被丢弃，原 ratchet 不变。直连接收接口先持久化密文，后台再解密；只入队不等于已解密持久化。提交后确认丢失，重复投递命中 Envelope ID + digest 去重并重新返回签名确认。发送方保留原密文直至验证确认，接收方删除已处理密文并保留摘要 tombstone。
+
+入站使用同一 SQLite 的独立连接，不持有外发 Endpoint mutex、不发起网络请求、不推进 ratchet；双方同时领取 prekeys、发信或同步时可以独立回答入站请求，避免互相等待。所有 ratchet 变化仍由唯一 Endpoint writer 管理。
 
 SQLite 使用 WAL、FULL synchronous、foreign_keys 和本地单写者文件锁。正常进程崩溃/重启保持事务一致性；从陈旧数据库备份回滚是另一种攻击/运维问题，本版不支持恢复旧 ratchet 快照。
 

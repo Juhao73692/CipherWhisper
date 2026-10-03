@@ -15,3 +15,7 @@ topicairn-protocol.workspace = true
 rcgen.workspace = true
 zeroize = "1"
 time = "0.3"
+reqwest.workspace = true
+getrandom = "0.4"
+hex.workspace = true
+uuid.workspace = true

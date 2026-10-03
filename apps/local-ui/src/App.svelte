@@ -48,6 +48,8 @@
     deviceText = $state(''),
     pendingOps = $state<Pending[]>([]);
   let clientMode = $derived(status?.mode === 'client');
+  let directMode = $derived(status?.transport === 'direct');
+  let peerRoutes = $state<{ identity: Card; endpoint: string }[]>([]);
   let pane = $state<'peers' | 'topics' | 'conversation'>('peers');
   let historyElement = $state<HTMLDivElement>(),
     editor = $state<HTMLTextAreaElement>();
@@ -101,7 +103,7 @@
   );
   const delivery: Record<string, string> = {
     queued: '等待发送',
-    sent: '已到 Relay',
+    sent: '密文已接收',
     delivered: '对方已接收',
     received: '已接收',
     failed: '中心拒绝',
@@ -138,6 +140,7 @@
     notice = '';
     connectionError = '';
     deviceRecords = [];
+    peerRoutes = [];
     deviceEnabled = false;
     deviceText = '';
     pendingOps = [];
@@ -173,10 +176,15 @@
         api<Status>('/status'),
         api<Outbox[]>('/outbox'),
       ]);
+      const routes =
+        s.transport === 'direct'
+          ? await api<{ identity: Card; endpoint: string }[]>('/p2p/peers')
+          : [];
       if (!unlocked) return;
       peers = p;
       topics = t;
       status = s;
+      peerRoutes = routes;
       outbox = o;
       if (modal === 'devices') await loadDevices();
       connectionError = '';
@@ -300,8 +308,16 @@
     busy = true;
     error = '';
     try {
-      const card = JSON.parse(cardText) as Card;
-      await api('/peers', card);
+      const imported = JSON.parse(cardText) as Card | { identity: Card };
+      const card = 'identity' in imported ? imported.identity : imported;
+      if ('identity' in imported) {
+        if (!directMode) throw new Error('请在使用直接 P2P 的中心导入连接卡。');
+        await api('/p2p/peers', imported);
+      } else {
+        if (directMode)
+          throw new Error('请导入对方下载的 .peer.json 连接卡，其中需要包含 P2P 地址。');
+        await api('/peers', card);
+      }
       await refresh();
       selectPeer(card.user_id);
       modal = null;
@@ -315,7 +331,7 @@
   async function readCard(event: Event) {
     const file = (event.target as HTMLInputElement).files?.[0];
     if (!file) return;
-    if (file.size > 16384) {
+    if (file.size > 300 * 1024) {
       error = '身份卡文件过大';
       return;
     }
@@ -460,23 +476,37 @@
     }
   }
 
-  function downloadCard() {
+  async function downloadCard() {
     if (!self) return;
-    const url = URL.createObjectURL(
-      new Blob([JSON.stringify(self, null, 2) + '\n'], { type: 'application/json' }),
-    );
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `${self.label || 'identity'}.contact.json`;
-    link.click();
-    URL.revokeObjectURL(url);
+    try {
+      exportJSON(
+        directMode ? await api('/p2p/contact') : self,
+        `${self.label || 'identity'}.${directMode ? 'peer' : 'contact'}.json`,
+      );
+    } catch (e) {
+      fail(e);
+    }
   }
   async function copyCard() {
     try {
-      await navigator.clipboard.writeText(JSON.stringify(self, null, 2));
+      await navigator.clipboard.writeText(
+        JSON.stringify(directMode ? await api('/p2p/contact') : self, null, 2),
+      );
       notice = '身份卡已复制';
     } catch {
       error = '浏览器未允许剪贴板访问，请使用下载身份卡。';
+    }
+  }
+  async function checkPeer() {
+    if (!activePeer || busy) return;
+    busy = true;
+    try {
+      await api(`/p2p/peers/${encodeURIComponent(activePeer.user_id)}/check`, {});
+      notice = '已验证对方身份，P2P 连接成功。';
+    } catch (e) {
+      fail(e);
+    } finally {
+      busy = false;
     }
   }
   async function replyTo(message: Message) {
@@ -896,7 +926,7 @@
           交换公开身份卡，并通过可信渠道核对完整 user_id 指纹。卡片自签名不等同于你已经核实了对方。
         </p>
         <label class="file-picker"
-          >选择 .contact.json 文件<input
+          >选择 .contact.json / .peer.json 文件<input
             type="file"
             accept=".json,application/json"
             onchange={readCard}
@@ -942,7 +972,7 @@
         <p>
           {modal === 'identity'
             ? '可以分享这张公开身份卡。它不包含私钥、管理令牌或消息历史。'
-            : '通过可信渠道核对完整 user_id。身份与 Relay 地址相互独立。'}
+            : '通过可信渠道核对完整 user_id。身份与网络地址相互独立。'}
         </p>
         <div class="identity-detail">
           <span class="eyebrow">{card.label}</span>
@@ -953,6 +983,16 @@
           <div class="detail-label">Curve25519 公钥</div>
           <code>{card.curve_key}</code>
         </div>
+        {#if directMode}
+          <p>直接 P2P：交换 .peer.json 连接卡，其中包含签名身份、地址及公开 CA。无需 Relay。</p>
+          {#if modal === 'peerIdentity'}
+            <code
+              >{peerRoutes.find((r) => r.identity.user_id === card.user_id)?.endpoint ||
+                '请导入对方的 .peer.json 连接卡'}</code
+            >
+            <button class="secondary" disabled={busy} onclick={checkPeer}>测试 P2P 连接</button>
+          {/if}
+        {/if}
         {#if modal === 'identity'}<div class="modal-buttons">
             <button class="primary" onclick={downloadCard}>下载身份卡</button><button
               class="secondary"
@@ -1065,7 +1105,7 @@
           </div>
         {/if}
       {:else if modal === 'search'}
-        <p>只检索这台计算机的 SQLite 历史。搜索词不会发送到 Relay。</p>
+        <p>只检索这台计算机的 SQLite 历史，搜索词保留在本机。</p>
         <form
           class="search-form"
           onsubmit={(e) => {

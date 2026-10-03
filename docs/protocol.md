@@ -47,7 +47,7 @@ These angle-bracket strings stand for nested objects, not literal string wire va
 {identity: ContactCard, signed_prekey: SignedPrekey, one_time_prekey: SignedPrekey | null}
 ```
 
-The Relay atomically marks one one-time key consumed, keeping a tombstone so republishing does not resurrect it. The sender validates all signatures and both identity keys against the imported Peer. It passes the selected one-time key (or fallback) and pinned Curve25519 identity to vodozemac Account::create_outbound_session. Receiver uses pinned sender Curve25519 identity with Account::create_inbound_session.
+The recipient center (or optional legacy Relay) atomically marks one one-time key consumed, keeping a tombstone so republishing does not resurrect it. The sender validates all signatures and both identity keys against the imported Peer. It passes the selected one-time key (or fallback) and pinned Curve25519 identity to vodozemac Account::create_outbound_session. Receiver uses pinned sender Curve25519 identity with Account::create_inbound_session.
 
 ## Envelope
 
@@ -111,7 +111,7 @@ Topic update event:
 
 Unknown payload fields, event types and protocol versions fail closed; no automatic fallback to plaintext. Future edit/delete/read/reaction/attachment types extend Conversation Layer after their authorization/conflict rules are specified. There are no separate Relay routes for these semantics.
 
-## Relay HTTP authentication
+## Optional legacy Relay HTTP authentication
 
 All Relay routes except `/health` require these headers:
 
@@ -140,7 +140,7 @@ Local delivery states:
 - `delivered`: recipient center committed plaintext/ratchet and ACK reached Relay.
 - `received`: locally received message.
 
-Delivery states are based on Relay reports, not cryptographic end-to-end receipts. An honest Relay reports delivered after a recipient ACK; a malicious Relay can lie. Delivery is not a human read receipt. Sender keeps outbox ciphertext until recipient ACK, enabling resubmit if Relay loses its database. Backoff after error is 2, 4, 8, …, 256 seconds; accepted-envelope status is polled at 5-second intervals. An explicit CLI/API sync can force immediate retry.
+In this optional legacy adapter, delivery states are based on Relay reports, not cryptographic end-to-end receipts. An honest Relay reports delivered after a recipient ACK; a malicious Relay can lie. Delivery is not a human read receipt. Sender keeps outbox ciphertext until recipient ACK, enabling resubmit if Relay loses its database. Backoff after error is 2, 4, 8, …, 256 seconds; accepted-envelope status is polled at 5-second intervals. An explicit CLI/API sync can force immediate retry.
 
 Each sync starts cursor 0, walks at most 100 pages of 100 unacknowledged messages, and ACKs only committed items. Unknown/tampered messages remain unacknowledged and reported, while later valid items can still be processed. Relay inbox cursors are durable monotonic row sequences, not client-managed ordering semantics.
 
@@ -184,3 +184,27 @@ Pull returns `{epoch,from_cursor,next_cursor,high_water,changes:[{seq,entity}]}`
 Commands are `{id:<fixed UUID>,operation}`. Operations have a `type`: `add_peer`, `create_topic`, `update_topic`, `send`. Send fixes `message_id`, `topic_id`, Markdown `body`, optional `reply_to` and local queue timestamp. Center assigns final message timestamp. Topic modification includes `base_title`/`base_archived` for conflict checking. Only the center encrypts into the external peer session.
 
 CommandReply is `{id,body_digest,result}`; digest hashes compact command JSON. Result is `{status:"accepted",entity,revision}` or `{status:"rejected",error,current:<Change|null>}`. Center persists results atomically with messages/ratchets/outbox. Same device+command ID+body returns the prior receipt; changing content under the ID is forbidden. Applying a receipt must not advance the page cursor; per-entity revision prevents late receipts overwriting newer pages. Permanently rejected text is retained locally until explicitly discarded. Operation receipts and sync logs are not garbage collected in v1.
+
+## Default direct P2P transport (no Relay)
+
+A signed `PeerProfile` (`.peer.json`) contains `version`, `identity: ContactCard`, `endpoint`, `ca_pem: string|null`, `signature`. Ed25519 signing bytes are the serde JSON tuple `["topicairn.peer.profile.v1",version,identity,endpoint,ca_pem]`. ContactCard field serialization is the protocol struct order, not arbitrary input JSON order. Verify the ContactCard and outer signature, pin both identity keys, and independently verify the full user fingerprint via a trusted channel. Reimporting the same identity can update address/CA; existing sessions and identity do not change.
+
+Only HTTPS origins are accepted remotely (TLS 1.3, hostname/certificate verification, no redirects); loopback HTTP is permitted for local tests. Optional CA pins the trusted certificates to the imported CA. UI and remote P2P listeners are separate. Both centers must import each other; no implicit trust or discovery. Initial asynchronous cryptographic prekey messages still use mature Olm, but the transport has no third-party offline prekey store: the peer must be online for the first claim.
+
+Routes: empty-body POST `/p2p/v1/ping` and `/p2p/v1/prekeys/claim`; POST `/p2p/v1/messages` with an Envelope; GET `/p2p/v1/messages/{id}` with an empty body. All routes require:
+
+```text
+x-peer-key: sender Ed25519 public key
+x-peer-target: recipient center user_id
+x-peer-time: Unix seconds
+x-peer-nonce: fresh UUID
+x-peer-signature: Ed25519 signature
+```
+
+Exact signing tuple: `["topicairn.peer.http.v1",target,method,path_and_query,hex(SHA256(exact_body_bytes)),timestamp,nonce]`. The target is the receiving stable identity, not its URL. Time window is ±300 seconds; used nonces are persisted. Authentication domain separators differ from both Relay and Device protocols. Origin-bearing browser calls and unknown Peer keys are rejected; only an Envelope whose sender matches the authenticated Peer and whose recipient matches this center can be queued.
+
+Successful responses are `PeerResponse<T> {version,from,to,nonce,data,signature}`, signed as `["topicairn.peer.response.v1",version,from,to,nonce,data]` using this center's stable identity. Validate the pinned identity, expected from/to, request nonce and complete signed data before applying it. `T` is respectively ContactCard, PrekeyBundle or Delivery `{id,acknowledged}`. Public prekeys are atomically claimed from persistent slots, and consumed slots cannot reappear after refresh/restart.
+
+The Envelope and decrypted ConversationEvent remain unchanged. Outgoing ciphertext and ratchet state commit before any network call. Incoming HTTP only persists opaque ciphertext addressed to this center, without third-party routing or history access. A separate DB connection serves incoming calls while the Endpoint waits on outgoing network, preventing simultaneous first-session deadlock; it never mutates ratchets. The background Endpoint verifies/decrypts and commits history/ratchet/received digest, then the signed Delivery may report `acknowledged:true`. Delivery only queried by the original sender.
+
+States: `queued` = durable local outbox; `sent` = peer accepted ciphertext; `delivered` = verified signed confirmation after receiver commit. No human read receipt. Keep exact ciphertext until confirmation, retry with fresh request nonce, deduplicate ID + digest, and reject ID collisions. Errors use bounded exponential backoff, preserve local history and outbox, and do not reencrypt. An established session can queue while the peer is offline; there is no third-party mailbox, automatic NAT traversal or forwarding. Direct inbox capacity is 10000 pending envelopes; processed tombstones currently have no GC.

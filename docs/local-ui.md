@@ -1,32 +1,32 @@
 # 本机 UI 与消息渲染
 
-本机 UI 与管理 API 一起嵌入 `topicairn`，在浏览器中运行，只允许 loopback 监听。`serve` 从中心读取历史；`connect` 从本机设备副本读取历史，由 Rust 后台使用独立设备密钥和认证 TLS 1.3 从中心拉取。两个中心之间继续使用 Olm 3DH / Double Ratchet 和密文 Relay。浏览器无需直接访问任何远程服务。
+本机 UI 与管理 API 一起嵌入 `topicairn`，在浏览器中运行，只允许 loopback 监听。`serve` 从中心读取历史；`connect` 从本机设备副本读取历史，由 Rust 后台使用独立设备密钥和认证 TLS 1.3 从中心拉取。两个中心默认直接 P2P，继续使用 Olm 3DH / Double Ratchet 端到端加密。浏览器无需直接访问任何远程服务。
 
 ## 开始使用
 
-保持 Relay 运行，在两台中心计算机各自启动：
+本机一条命令开启两个已互加的测试实例：`./topicairn local-test --open`。永久实例可分别启动：
 
 ```sh
 read -rs 'TOPICAIRN_PASSPHRASE?本机可信域口令（至少 12 bytes）: '; echo
 export TOPICAIRN_PASSPHRASE
 ./topicairn serve --data alice --name Alice \
-  --relay https://192.168.1.10:8787 --relay-ca relay-ca.pem --open
+  --bind 127.0.0.1:8790 --peer-bind 127.0.0.1:8800 --open
 ```
 
-另一台将 `--data alice --name Alice` 改为 `--data bob --name Bob`，Relay 地址和 CA 使用之前两台 Mac 的配置。已有身份时不要更换数据目录或口令；`--name` 不会重建已有身份。完整 Relay 和 TLS 准备步骤见 [两台 Mac 测试指南](macos-testing.md)。
+本机 Bob 使用自己的目录和两个不同端口，例如 UI 8791 / P2P 8801。已有身份时不要更换数据目录或口令；`--name` 不会重建已有身份。两台电脑间需配置对外 HTTPS 地址及证书，详见 [直接 P2P 指南](p2p-testing.md)。
 
 `--open` 打开默认浏览器，使用 90 秒有效、一次性的 URL fragment 完成自动解锁。永久 `admin.token` 不会出现在 URL、HTML 或服务日志中。自动打开失败时，访问终端打印的本机地址（默认 `http://127.0.0.1:8790/`），输入该数据目录中的 `admin.token`。它是本机管理凭证，不是可信域口令，不要与联系人交换。
 
 1. 点击左下角自己的身份，下载公开身份卡。
-2. 两台电脑通过可信渠道交换 `.contact.json`，核对完整 `user_id`。
-3. 点击联系人列表的 `＋`，选文件或粘贴 JSON，验证并导入对方。双方均需导入。
+2. 两台电脑通过可信渠道交换包含签名地址/可选 CA 的 `.peer.json`，核对完整 `user_id`。
+3. 点击联系人列表的 `＋`，选文件或粘贴 JSON，验证并导入对方。双方均需导入，然后可在联系人详情点击 **测试 P2P 连接**。
 4. 选联系人，点击话题列的 `＋` 创建话题。
 5. 编写消息，可先预览，点击发送或按 `⌘/Ctrl + Enter`。
 6. 支持回复、查看原文、本地搜索、重命名、归档和恢复话题。联系人名称可打开完整身份详情。
 
 中心可以点击 **域内设备管理** 导入设备卡、下载中心签名的配对文件和撤销设备。设备端使用同一界面，增加 **设备同步与队列**，可查看独立同步游标、待处理操作、失败原因和保留的消息原文；首次设置和两台 Mac 的命令见 [设备同步指南](device-sync.md)。
 
-服务自动同步，界面每 5 秒刷新；`↻` 立即强制同步并重试。等待发送、已到 Relay、对方已接收分别表示本地入队、Relay 接受、对方端点确认接收。**不表示人已阅读**。首次会话需 Relay 可用且对方已上传 prekeys；之后可离线入队等待恢复网络。首次运行服务会自动发布 prekeys。
+服务自动同步，界面每 5 秒刷新；`↻` 立即强制同步并重试。等待发送、密文已接收、对方已接收分别表示本地入队、对端持久化密文、对端解密并持久化后给出签名确认。**不表示人已阅读**。首次会话需对方在线以领取签名 prekeys；之后可离线入队等待恢复。显式旧 Relay 模式中，第二个状态表示 Relay 接受，最终送达由 Relay 报告。
 
 草稿按话题保存在当前页面内存中，切换话题不丢失。刷新或锁定界面会清除授权和草稿；重新解锁后消息历史从 SQLite 加载。锁定只关闭页面访问，不停止后台服务。Ctrl-C 退出服务。服务运行时不要对同一个数据目录运行管理 CLI。
 
@@ -83,7 +83,7 @@ cargo test --workspace --locked
 npm --prefix apps/local-ui run test:browser
 ```
 
-macOS 浏览器测试使用已安装的 Chrome；Linux CI 先执行 `npx playwright install --with-deps chromium`。测试启动临时 Alice、Bob、Relay 三个进程和两个浏览器上下文，验证真实 E2EE 收发、一次性自动解锁、数学/代码/表格、恶意输入、回复、本地搜索、隔离话题、草稿、重命名、归档、窄屏和锁定。进程与临时数据在结束时清理。截图写入忽略的 `artifacts/`。
+macOS 浏览器测试使用已安装的 Chrome；Linux CI 先执行 `npx playwright install --with-deps chromium`。新增 P2P 浏览器用例通过 `local-test` 启动两个无 Relay 实例，验证签名连接卡导入/导出、双向连接和实际聊天。保留旧 Relay 回归用例，验证真实 E2EE 收发、一次性自动解锁、数学/代码/表格、恶意输入、回复、本地搜索、隔离话题、草稿、重命名、归档、窄屏和锁定。进程与临时数据在结束时清理。截图写入忽略的 `artifacts/`。
 
 另一个浏览器用例实际在中心 UI 授权设备、下载配对文件，启动相同软件的客户端后验证同步历史/渲染、发信、被中心拒绝后保留正文以及撤销。所有浏览器请求仍只发往各自 loopback UI。
 

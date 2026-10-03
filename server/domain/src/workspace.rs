@@ -11,6 +11,18 @@ pub(crate) enum Workspace {
     Client(Box<Replica>),
 }
 impl Workspace {
+    pub(crate) fn transport_kind(&self) -> &'static str {
+        match self {
+            Self::Center(e) => {
+                if e.is_direct() {
+                    "direct"
+                } else {
+                    "relay"
+                }
+            }
+            Self::Client(_) => "device",
+        }
+    }
     pub(crate) fn center(&mut self) -> Result<&mut Endpoint> {
         match self {
             Self::Center(e) => Ok(e),

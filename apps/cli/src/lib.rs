@@ -10,10 +10,11 @@ use zeroize::Zeroizing;
 pub struct AdminArgs {
     #[arg(long, default_value = "domain-data")]
     pub data: PathBuf,
-    #[arg(long, default_value = "http://127.0.0.1:8787")]
-    pub relay: String,
-    /// Trust this PEM CA for the relay HTTPS connection.
+    /// Optional legacy relay; the default is direct P2P.
     #[arg(long)]
+    pub relay: Option<String>,
+    /// Trust this PEM CA for the relay HTTPS connection.
+    #[arg(long, requires = "relay")]
     pub relay_ca: Option<PathBuf>,
     #[arg(
         long,
@@ -93,13 +94,17 @@ pub async fn run(args: AdminArgs) -> Result<()> {
         Command::Init { name } => Some(name.as_str()),
         _ => None,
     };
-    let mut domain = Endpoint::open_with_ca(
-        &args.data,
-        &passphrase,
-        label,
-        &args.relay,
-        args.relay_ca.as_deref(),
-    )?;
+    let mut domain = if let Some(relay) = &args.relay {
+        Endpoint::open_with_ca(
+            &args.data,
+            &passphrase,
+            label,
+            relay,
+            args.relay_ca.as_deref(),
+        )?
+    } else {
+        Endpoint::open_direct(&args.data, &passphrase, label)?
+    };
     match args.command {
         Command::Init { .. } | Command::Identity => print(domain.contact_card()?)?,
         Command::Publish => {
@@ -107,9 +112,18 @@ pub async fn run(args: AdminArgs) -> Result<()> {
             print(serde_json::json!({"published":true}))?;
         }
         Command::AddPeer { card } => {
-            let card: ContactCard = serde_json::from_slice(&std::fs::read(card)?)?;
-            let id = card.user_id.clone();
-            domain.add_peer(card)?;
+            let data: serde_json::Value = serde_json::from_slice(&std::fs::read(card)?)?;
+            let id = if data.get("identity").is_some() {
+                let profile: topicairn_protocol::p2p::PeerProfile = serde_json::from_value(data)?;
+                let id = profile.identity.user_id.clone();
+                domain.add_direct_peer(profile)?;
+                id
+            } else {
+                let card: ContactCard = serde_json::from_value(data)?;
+                let id = card.user_id.clone();
+                domain.add_peer(card)?;
+                id
+            };
             print(serde_json::json!({"added":id}))?;
         }
         Command::Peers => print(domain.peers()?)?,

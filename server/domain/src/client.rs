@@ -70,6 +70,7 @@ pub async fn run_client(args: ClientArgs) -> Result<()> {
         args.open,
         super::workspace::Workspace::Client(Box::new(replica)),
         None,
+        None,
     )
     .await
 }

@@ -8,8 +8,6 @@ Alice Desktop -- authenticated TLS 1.3 --> Alice center
                                            |
                               Olm 3DH / Double Ratchet
                                            |
-                                    opaque Relay
-                                           |
                                         Bob center
 ```
 
@@ -17,7 +15,7 @@ Alice Desktop -- authenticated TLS 1.3 --> Alice center
 
 ## 在两台 Mac 上测试一个可信域
 
-假设中心 Mac 的地址是 `192.168.1.10`，客户端 Mac 能连接该地址的 TCP 8792 端口。下载同一个 `topicairn` 到两台机器；最低 macOS 13，支持 Apple Silicon 和 Intel。现有的中心、Relay 和外部联系人配置可直接沿用。
+假设中心 Mac 的地址是 `192.168.1.10`，客户端 Mac 能连接该地址的 TCP 8792 端口。下载同一个 `topicairn` 到两台机器；最低 macOS 13，支持 Apple Silicon 和 Intel。中心默认直接 P2P，外部通信与域内设备同步使用独立监听。
 
 ### 1. 中心开启设备 HTTPS 端口
 
@@ -27,13 +25,15 @@ Alice Desktop -- authenticated TLS 1.3 --> Alice center
 ./topicairn tls-init --host 192.168.1.10 --out device-tls
 ```
 
-已有中心使用**原数据目录和原口令**。退出原 `serve` 后重新启动，添加以下设备参数；保留原来的 `--relay` / `--relay-ca`：
+已有中心使用**原数据目录和原口令**。退出原 `serve` 后重新启动，添加以下设备参数，并按需要保留原 P2P 地址/证书参数：
 
 ```sh
 read -rs 'TOPICAIRN_PASSPHRASE?中心原口令: '; echo
 export TOPICAIRN_PASSPHRASE
 ./topicairn serve --data alice --name Alice \
-  --relay https://192.168.1.10:8787 --relay-ca relay-ca.pem \
+  --peer-bind 0.0.0.0:8800 --peer-url https://192.168.1.10:8800 \
+  --peer-tls-cert device-tls/server.pem --peer-tls-key device-tls/server-key.pem \
+  --peer-ca device-tls/ca.pem \
   --device-bind 0.0.0.0:8792 \
   --device-tls-cert device-tls/server.pem \
   --device-tls-key device-tls/server-key.pem \
@@ -41,7 +41,7 @@ export TOPICAIRN_PASSPHRASE
   --device-url https://192.168.1.10:8792 --open
 ```
 
-这里 `relay-ca.pem` 是你之前 Relay 的公开 CA，不是新建的设备 CA。若测试 Relay 在本机使用 HTTP，替换为 `--relay http://127.0.0.1:8787` 并去掉 `--relay-ca`。两台 Mac 仅验证域内同步时可创建本地话题和拉取历史；与另一用户实际聊天仍需另一中心和可用 Relay，见 [中心间测试指南](macos-testing.md)。
+示例在 P2P 和设备两个独立 TLS 监听复用同一中心测试证书，稳定身份签名仍分别验证。另一用户中心通过 `.peer.json` 导入在中心 UI 配置；设备添加的裸联系人卡不包含 P2P 路由，需要中心补充连接卡。中心间直连设置见 [P2P 指南](p2p-testing.md)。旧 Relay 模式也可继续添加设备监听，不会改变设备协议。
 
 本机 UI/Admin 仍只监听 `127.0.0.1:8790`；设备连接的是独立的 HTTPS 8792。不要把管理端口映射到网络。允许 macOS 防火墙上的设备监听端口。
 
@@ -93,7 +93,7 @@ export TOPICAIRN_PASSPHRASE
 - 客户端可离线阅读已缓存历史，并在已有未归档话题内排队发送。创建话题、添加联系人和修改话题需中心确认；网络结果不确定时已持久化，界面会提示等待重试，**不要重复提交**。
 - 两台客户端同时修改话题，中心比较原标题和归档状态；旧版本操作明确拒绝并返回当前版本。被拒绝的消息/修改保留在设备队列，不默默丢弃。复制需要保留的正文后，可删除明确失败的记录，再基于新状态操作；结果不确定的请求不能取消。
 - 消息到达中心后使用中心时间，并按中心日志传播；同秒消息在副本中保留中心插入顺序。设备离线草稿的本地排队时间可能早于最终中心接收时间。
-- 外部 Relay 离线不影响设备拉取已保存历史。已有 Peer session 时中心仍可排队外发；首次会话建立需 Relay 和对端公开 prekeys 可用。
+- 外部 Peer 离线不影响设备拉取已保存历史。已有 Peer session 时中心仍可排队外发；直接 P2P 首次会话建立需对方在线。
 
 ## 撤销、更新和边界
 
@@ -107,4 +107,4 @@ export TOPICAIRN_PASSPHRASE
 
 域内加密使用成熟的 **rustls TLS 1.3**（默认密钥交换套件、认证加密、证书校验），另外以 Ed25519 设备签名认证请求，以中心身份签名认证响应。它不是为每台设备另外创建一份外部 Double Ratchet；中心间 E2EE 的算法和边界保持独立。本地历史与索引为明文 SQLite，私钥和配对配置经 Argon2id + XChaCha20-Poly1305 保护，目录 0700 / 数据库 0600。设备自身属于用户的可信域，使用者须保护本机环境。
 
-测试：`cargo test --workspace --locked`、`python3 scripts/device-smoke.py --binary dist/topicairn`、`npm --prefix apps/local-ui run test:browser`。设备 smoke 使用临时目录/动态端口启动同一软件的五个进程，结束后自动清理。
+测试：`cargo test --workspace --locked`、`python3 scripts/device-smoke.py --direct --binary dist/topicairn`、`npm --prefix apps/local-ui run test:browser`。设备 smoke 使用临时目录/动态端口在直接 P2P 模式启动两个中心和两个设备共四个进程，不启动 Relay，结束后自动清理。

@@ -30,6 +30,11 @@ jobs:
         run: cargo test --workspace --locked
       - name: Build servers
         run: cargo build --workspace --locked
+      - name: Direct P2P smoke tests (no relay)
+        run: |
+          python3 scripts/p2p-smoke.py
+          python3 scripts/p2p-smoke.py --tls
+          python3 scripts/device-smoke.py --direct
       - name: Real-process smoke test
         run: python3 scripts/smoke.py
       - name: Single-executable HTTPS smoke test

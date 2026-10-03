@@ -12,7 +12,7 @@ Ed25519 为稳定身份和严格签名验证；X25519 为椭圆曲线密钥交�
 
 Olm v1 使用 X25519、HKDF-SHA-256、AES-256-CBC 与 HMAC-SHA-256，内部认证 tag 为 Olm 规范规定的截断 8 bytes。我们额外要求每个外层 Envelope 通过完整 Ed25519 签名，覆盖密文和路由；修改密文或路由必须先突破固定身份签名验证。这不是把完整 HMAC 或 AEAD tag 宣称为 8 bytes；所有 cryptographic primitive 与 ratchet 都由库实现。
 
-One-time prekey 由 Relay 原子领取且不可因重复 publish 重新出现；接收端建立新会话时删除对应私钥。池为空时使用签名 fallback key（Olm 模型）。fallback 被复用时，初始握手的前向保密弱于消费 one-time key 的握手；收到后续 ratchet 回复引入新熵。当前同一 fallback key 的签名有效期被续期，不自动轮换私钥，以避免破坏长时间离线队列；部署审查时应完善保留窗口和轮换策略。
+One-time prekey 默认由对端中心原子领取（旧模式由 Relay 领取）且不可因重复 publish 重新出现；接收端建立新会话时删除对应私钥。池为空时使用签名 fallback key（Olm 模型）。fallback 被复用时，初始握手的前向保密弱于消费 one-time key 的握手；收到后续 ratchet 回复引入新熵。当前同一 fallback key 的签名有效期被续期，不自动轮换私钥，以避免破坏长时间离线队列；部署审查时应完善保留窗口和轮换策略。
 
 Double Ratchet 的恢复能力要求未泄露的新随机 DH 熵和后续双向通信。持续控制中心端点、同时盗取长期身份密钥并主动冒充的攻击者不会自动失去控制。vodozemac 有独立库审计；Topicairn 的协议组合和服务实现尚未独立审计，不能据此声称整个项目已审计。
 
@@ -30,17 +30,21 @@ Double Ratchet 的恢复能力要求未泄露的新随机 DH 熵和后续双向�
 
 外层 Envelope 签名绑定 version、id、from、to、ciphertext、timestamp；解密 Payload 再次绑定全部路由字段。固定签名先于解密/去重。成功解密后持久化 Envelope digest 去重；ratchet 自身也拒绝重复 message keys。
 
-Relay HTTP 认证签名绑定 method、完整 path/query、精确 body SHA-256、时间和 UUID nonce。Relay 只允许 ±300 秒，持久化已用 nonce；签名、body 或路径不匹配和重复请求被拒绝。新的 HTTP 重试有新 nonce，但 Envelope 保持不变。
+可选旧 Relay HTTP 认证签名绑定 method、完整 path/query、精确 body SHA-256、时间和 UUID nonce。Relay 只允许 ±300 秒，持久化已用 nonce；签名、body 或路径不匹配和重复请求被拒绝。新的 HTTP 重试有新 nonce，但 Envelope 保持不变。
 
-只有收件人能够读取自己的 inbox/ACK，只有发送者可以读取对应 delivery state。第三方不能冒用公开 user_id 清空队列。ACK 表示对端中心已持久化消息，不表示人已读。
+默认直接 P2P 的签名请求使用独立 domain separator，绑定目标中心身份、方法、完整 path/query、正文摘要、时间和 UUID nonce；仅固定 Peer 可调用。中心持久化 nonce，拒绝重放。签名响应绑定双方身份和请求 nonce，客户端还验证完整响应数据。prekey、连接测试和 ACK 均不接受未验证响应；TLS 服务证书本身不能替代中心稳定身份签名。
+
+对端入站只能保存发给自己的密文；送达状态只允许原发送者查询。仅在解密/业务校验成功并提交历史、ratchet、去重记录之后，签名响应才包含 `acknowledged:true`。错误密文不能获取成功确认；重投递同一 ID 但不同摘要被拒绝。网络返回前崩溃仍可幂等重投；每次 HTTP 重试更换 nonce，密文不变。签名送达证明是对端中心的声明，不是人已读。
+
+远程 P2P 仅 HTTPS/TLS 1.3，证书/主机名验证、无重定向，连接卡 CA 存在时只信任它；HTTP 只用于 loopback。签名 `.peer.json` 绑定身份、地址和公开 CA，导入仍需通过可信渠道核对完整身份指纹。首次领取 prekey 需对方在线；已建立会话在发送方本地排队，无第三方离线信箱。监听与本机管理/设备协议分离，拒绝 Origin，不暴露明文历史和管理功能。公网 NAT 穿透、发现、限流及 tombstone 长期清理未实现。
 
 非 loopback Relay URL 强制 HTTPS，HTTP redirect 禁止。Relay 未配置 TLS 时只允许 loopback；配置 `--tls-cert`/`--tls-key` 后支持内置 HTTPS 的远程监听，也可使用 TLS 反向代理。自签发测试 CA 通过 `--relay-ca` 显式提供给客户端，不禁用证书/主机名验证，不修改系统信任库。管理 API 的随机 256-bit bearer token 仅用于本机，恒定时间比较其摘要，默认不启用 CORS。
 
-## Relay 可见信息及可作恶范围
+## 可选旧 Relay 的可见信息及可作恶范围
 
 可见：双方身份、公钥/prekeys、Envelope ID、外层时间、大小、会话密文头、网络来源、投递及 ACK 状态。不可见：Topic ID/标题、Markdown、reply、搜索、历史。需要隐藏流量关系时还需另行设计元数据保护。
 
-Relay 可以丢弃、延迟消息、消耗公开 prekeys 或谎报 delivery 状态，并能拒绝服务；E2EE 不保证 Relay 可用性。当前 ACK/delivery 是 Relay 报告，不是对端签名的加密送达证明。Relay 本身不拥有解密私钥。每收件人未 ACK 队列限制 10000，单消息 Markdown 最大 64 KiB；已 ACK tombstone、nonce/prekey tables 的长期清理和公网防滥用不完整。当前适用于受控部署；公网部署需限流、存储配额、日志策略和权限隔离。
+Relay 可以丢弃、延迟消息、消耗公开 prekeys 或谎报 delivery 状态，并能拒绝服务；E2EE 不保证 Relay 可用性。仅旧 Relay 模式的 ACK/delivery 是 Relay 报告，不是对端签名的加密送达证明。Relay 本身不拥有解密私钥。每收件人未 ACK 队列限制 10000，单消息 Markdown 最大 64 KiB；已 ACK tombstone、nonce/prekey tables 的长期清理和公网防滥用不完整。当前适用于受控部署；公网部署需限流、存储配额、日志策略和权限隔离。
 
 附件、编辑、删除、已读、群聊、Federation 均未实现，不能从现有 API 推导这些未来功能的安全性质。
 

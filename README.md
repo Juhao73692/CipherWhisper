@@ -2,46 +2,51 @@
 
 **Topic + Cairn**：用独立话题组织消息，用可信节点连接个人可信域。
 
-这是一个带有本机聊天 UI 和域内设备同步的 Rust MVP。外部加密协议端点是两个 Personal Trust Domain 的**中心计算机**；域内设备使用独立密钥，通过另一套认证 HTTPS 接口连接自己的中心。一个中心拥有稳定身份、Topic 和 Markdown 明文历史；中转 Relay 只保存公钥、路由元数据和密文。
+Rust MVP：两个 Personal Trust Domain 的中心计算机**直接 P2P**，使用经过身份认证的 Olm 3DH / Double Ratchet 端到端加密，不需要 Relay。中心拥有自己的稳定身份、SQLite 历史与本机聊天 UI；授权设备通过独立 HTTPS 协议同步自己的中心。
 
 ```text
-Alice Trust Domain center  ── authenticated E2EE ──  Bob Trust Domain center
-                 \             opaque Relay             /
-                  └────────── offline queue ────────────┘
+Alice devices -- authenticated TLS 1.3 --> Alice center
+                                             ↕ direct authenticated E2EE
+Bob devices   -- authenticated TLS 1.3 --> Bob center
 ```
 
-内置本机浏览器 UI：联系人 / 话题 / 对话三栏，Markdown、LaTeX 和代码高亮。中心与设备客户端共用一个软件和 UI；UI 与管理 API 只允许本机访问，独立设备 HTTPS 端口可远程连接。不包含群聊或 Federation。
+## 一条命令测试两个实例
+
+下载或构建同一个 macOS Universal 可执行文件，在它所在目录运行：
+
+```sh
+./topicairn local-test --open
+```
+
+自动启动 Alice 和 Bob 两个中心，互相导入签名连接卡并验证连接。UI 分别在 `http://127.0.0.1:8790/`、`http://127.0.0.1:8791/`；P2P 端口为 8800、8801。在 Alice 选择 Bob → **本机 P2P 测试**，发送消息；Bob 收到后可以回复。没有第三个中转服务。
+
+Ctrl-C 停止双方并删除临时测试数据。永久身份、独立启动、修改端口和两台电脑的 TLS 设置见 [直接 P2P 测试指南](docs/p2p-testing.md)。跨电脑需双方可达地址，例如 LAN/Tailscale；首次握手需对方在线。已有会话可在本地排队，重连后自动投递。
 
 ## 已实现
 
-- 本地身份：Ed25519 签名身份、X25519 密钥交换公钥、签名 Contact Card、指纹固定；地址与身份分离。
-- 离线首次发送：签名 fallback prekey + Relay 原子领取 one-time prekey；使用 vodozemac Olm 3DH 和 Double Ratchet。
-- 私钥/ratchet 状态：Argon2id 口令派生密钥 + 随机 nonce 的 XChaCha20-Poly1305 加密，绑定状态记录。
-- SQLite：peers、topics、messages、identity、sessions、outbox、接收去重、待 ACK，FTS5 仅本地检索。
-- Markdown/LaTeX/code 源文完整传输及存储；本机使用 markdown-it、KaTeX、Shiki 和 DOMPurify 安全渲染。
-- Topic 创建、独立历史、回复引用、标题/归档的加密事件；解密后校验 Peer 与 Topic 所属关系。
-- 持久化离线队列、游标分页、幂等发送、接收去重、持久化后 ACK、送达状态、指数退避重试。
-- 内置本机 UI：身份卡导出/导入、独立话题、消息回复、原文、预览、草稿、本地搜索、归档、投递状态与重试。
-- 中心端点服务、密文 Relay、管理 CLI；两个中心端点共用一个简单 Relay。
-- 域内设备授权/撤销、独立设备密钥、TLS 1.3、请求/响应签名、分页拉取、独立 ACK 游标、历史和 SENT 同步、持久化客户端队列与操作幂等、话题冲突检测。
+- Ed25519 稳定身份、X25519 椭圆曲线交换、固定 Peer 身份验证；Olm 3DH / Double Ratchet 来自 vodozemac。
+- 直接领取签名 one-time/fallback prekey；签名请求与响应、防重放、密文队列、重试、去重、解密持久化后的签名送达确认。
+- 密钥保险库：Argon2id + XChaCha20-Poly1305；SQLite WAL/FULL，ratchet、不可变 outbox 和历史原子保存，进程锁防止并发打开同一目录。
+- 多个独立 Topic、Markdown 源码、回复、标题/归档、本地 FTS5 搜索。
+- 内嵌 Svelte UI，KaTeX、Shiki、DOMPurify；无 CDN，禁止原始 HTML 执行和远程图片加载。
+- 同一软件的 `serve` 中心与 `connect` 设备客户端：独立设备密钥、授权/撤销、TLS 1.3、分页日志、每设备游标/ACK、幂等操作、incoming/SENT 历史同步。
 
-## 单文件 macOS 版本
+设备客户端不获得中心身份私钥或外部 ratchet。外部 Peer 只看到中心身份。详见 [设备同步](docs/device-sync.md) 和 [本机 UI](docs/local-ui.md)。
 
-运行 `./scripts/package-macos.sh` 构建 `dist/topicairn`：Universal arm64 + x86_64，最低 macOS 13，只需要 macOS 系统库。一个可执行文件包含 `relay`、`serve`、`device-init`、`connect`、`admin`、`tls-init`，无需用户安装 Rust、Node 或反向代理。打包步骤会生成本地 ad-hoc 签名、SHA-256 校验和及附带使用指南的 tar.gz。
+## macOS 单文件
 
-本机 UI 的用法见 [UI 指南](docs/local-ui.md)。在原 `serve` 命令末尾加 `--open` 即可自动打开并解锁。
+```sh
+./scripts/package-macos.sh
+./dist/topicairn local-test --open
+```
 
-将客户端加入自己的中心，见 [域内设备同步指南](docs/device-sync.md)：中心开启独立设备 HTTPS 监听，在 UI 授权设备公钥，客户端用 `connect --open` 拉取历史并聊天。
+产物 `dist/topicairn` 包含全部 UI 与功能，Universal arm64 + x86_64，最低 macOS 13，仅依赖系统库；用户不需安装 Rust/Node。打包生成 ad-hoc 签名、SHA-256 与附指南的 `dist/topicairn-macos-universal.tar.gz`，没有 Apple 公证。
 
-两台电脑的完整操作步骤见 [macOS 测试指南](docs/macos-testing.md)。Relay 可使用内置 HTTPS，`tls-init` 生成测试 CA 和服务器证书；中心端点使用 `--relay-ca ca.pem` 信任该 CA，继续验证证书和主机名。测试 TLS 私钥不会进入 Git。
+`serve` 默认直接 P2P。旧 Relay 适配器保留为显式可选兼容模式：只有指定 `serve --relay <URL>` 才启用；不会默认启动或自动回退。旧方式见 [可选 Relay 指南](docs/macos-testing.md)。Federation、群聊、附件、账号恢复仍未实现。
 
-## 工具版本
+## 构建和验证
 
-2026-10-03 核对并安装的最新稳定工具：Rust/Cargo **1.99.0**（Rust 2024 edition），rustup **1.29.1**，Node **26.10.0 Current**，npm **12.2.0**，pnpm **12.8.1**。
-
-只构建服务端需要 Rust；修改前端和打包时使用 Node/npm。`rust-toolchain.toml` 固定工具链，`Cargo.lock` 固定完整依赖。核心依赖：vodozemac 0.11.1、Axum 0.8.9、Tokio 1.53.1、reqwest 0.13.5、rusqlite 0.40.2、Argon2 0.6.0、chacha20poly1305 0.11.0。前端锁定 Svelte 5.57.1、Vite 8.3.2、TypeScript 6.0.3（Svelte 检查器支持的最新版本）、KaTeX 0.19.0、Shiki 4.5.0、DOMPurify 3.4.16。无需安装 Tauri。
-
-## 构建与验证
+工具版本在 `rust-toolchain.toml`、`.node-version` 和两个 lockfile 中固定。
 
 ```sh
 npm --prefix apps/local-ui ci
@@ -51,94 +56,24 @@ npm --prefix apps/local-ui run build
 cargo build --workspace --locked
 cargo test --workspace --locked
 cargo clippy --workspace --all-targets --locked -- -D warnings
-cargo fmt --all -- --check
-python3 scripts/smoke.py
-python3 scripts/smoke.py --binary target/debug/topicairn --tls
-python3 scripts/device-smoke.py
+python3 scripts/p2p-smoke.py
+python3 scripts/p2p-smoke.py --tls
+python3 scripts/device-smoke.py --direct
 npm --prefix apps/local-ui run test:browser
 ```
 
-测试需要允许 localhost TCP 监听。`smoke.py` 使用临时数据目录和动态端口，启动 Alice 中心端点、Bob 中心端点、Relay 三个真实进程，验证离线首次发送、双 Topic、ACK、三方重启、回复及网络恢复；结束时停止全部测试进程并删除测试数据。
+测试需要 localhost TCP 监听。P2P smoke 只启动两个中心，覆盖双向并发首次握手、Topic/Markdown/回复、签名 ACK、断线排队、双方重启和去重。设备 smoke 在直连模式启动两个中心和两个设备，验证独立游标、幂等发送、断线恢复和永久撤销。浏览器测试验证真实加密聊天、连接卡、渲染和设备管理；进程及临时数据自动清理。旧 Relay 回归用例也保留。
 
-`device-smoke.py` 额外启动两个独立设备客户端，验证同一软件的五进程链路、既有历史、客户端发送/修改、TLS 校验、断线/重启/去重和撤销。Rust 同步测试覆盖分页事务、响应丢失、晚到收据、双设备冲突、重放和旧历史升级；浏览器测试覆盖 UI 授权配对、设备渲染与失败队列。
-
-## 运行 Relay
-
-```sh
-./target/debug/topicairn-relay --bind 127.0.0.1:8787 --database relay.sqlite
-```
-
-Relay 默认以 HTTP 只监听 loopback。提供 `--tls-cert` 和 `--tls-key` 时，可以使用内置 HTTPS 监听局域网地址；也可保留 loopback HTTP 并在前面配置 HTTPS 反向代理。中心端点对非 loopback Relay 强制 HTTPS。中心端点管理 API 只监听本机。
-
-## 两个中心端点示例
-
-下面的命令用于本机验证。生产时 Alice、Bob 在各自中心计算机上持有自己的数据目录和口令。公共 Contact Card 通过你信任的渠道交换，核对完整 `user_id` 指纹，再导入。
-
-在 zsh 中以隐藏输入设置口令；每个端点可使用不同口令：
-
-```sh
-read -rs 'TOPICAIRN_PASSPHRASE?Domain passphrase: '; echo
-export TOPICAIRN_PASSPHRASE
-```
-
-口令至少 12 bytes；使用足够强的独立口令。不要把真实口令写入命令行、仓库、shell history 或日志。暂不支持恢复/备份/口令轮换。
-
-```sh
-./target/debug/topicairn-cli --data alice init --name Alice > alice.contact.json
-./target/debug/topicairn-cli --data bob init --name Bob > bob.contact.json
-./target/debug/topicairn-cli --data alice add-peer bob.contact.json
-./target/debug/topicairn-cli --data bob add-peer alice.contact.json
-./target/debug/topicairn-cli --data alice publish
-./target/debug/topicairn-cli --data bob publish
-```
-
-Bob 发布 prekeys 后可以完全离线，Alice 仍可建立第一次会话。新 Topic 是本地创建的；第一次消息会把必要 Topic 信息放在密文中交给 Bob。
-
-```sh
-./target/debug/topicairn-cli --data alice new-topic --peer '<Bob 的 user_id>' --title '数学'
-./target/debug/topicairn-cli --data alice send --topic '<topic id>' --file message.md
-./target/debug/topicairn-cli --data alice sync
-# 此时可以退出 Alice，Bob 后续启动即可收取：
-./target/debug/topicairn-cli --data bob sync
-./target/debug/topicairn-cli --data bob history --topic '<topic id>'
-./target/debug/topicairn-cli --data alice sync  # 更新送达状态
-```
-
-使用已建立的会话时，Relay 离线也能把消息加密排入本地 outbox。首次建立会话需要 Relay 可用、对方预先发布公钥。`send` 只做可靠本地入队，`sync` 或运行中的服务负责投递。
-
-## 长期运行中心端点
-
-分别在两个终端启动，或在各自计算机上运行：
-
-```sh
-./target/debug/topicairn-domain --data alice --bind 127.0.0.1:8790 --relay http://127.0.0.1:8787
-./target/debug/topicairn-domain --data bob --bind 127.0.0.1:8791 --relay http://127.0.0.1:8787
-```
-
-首次直接运行服务可以加 `--name Alice` 创建身份。服务自动发布 prekeys、轮询队列、投递、重试和 ACK。启动后生成数据目录内权限为 0600 的 `admin.token`；所有管理 API 均要求 `Authorization: Bearer <token>`。状态错误可从 `/status` 查看，服务日志不输出消息正文和密钥。
-
-服务运行期间使用本机 UI 或管理 API，不要并发打开同一个目录的 CLI。文件锁防止两个进程同时修改身份或 ratchet。
-
-```sh
-curl --noproxy '*' --config - http://127.0.0.1:8790/identity <<EOF_CONFIG
-header = "Authorization: Bearer $(cat alice/admin.token)"
-EOF_CONFIG
-```
-
-使用 `--config -` 避免把 token 放在 curl 的进程参数中。Topic、消息、搜索接口见 [管理 API](docs/api.md)。`--sync-seconds` 可设为 1..300，默认 5 秒。Ctrl-C 会优雅关闭。
-
-## 模块边界
+## 模块
 
 | 目录 | 职责 |
 |---|---|
-| `crates/protocol` | 版本、Contact Card、签名 prekeys、HTTP 认证、Envelope、加密 Payload/Event types |
-| `crates/core` | 中心身份/E2EE/Relay、密钥保险库、SQLite、同步日志、独立设备副本和操作队列 |
-| `server/relay` | 只处理公钥和 opaque ciphertext 的持久化路由服务 |
-| `server/domain` | 中心/客户端模式、loopback 管理 API/UI、独立设备 HTTPS 接口 |
-| `apps/local-ui` | Svelte 本机 UI、安全 Markdown/LaTeX/代码渲染与浏览器测试 |
-| `apps/cli` | 中心端点的无界面管理工具 |
-| `apps/topicairn` | 统一单文件入口和测试 TLS 证书生成 |
+| `crates/protocol` | 身份、prekeys、签名 Envelope、Peer HTTP / Device 协议、加密 Event |
+| `crates/core` | 加密会话、密钥保险库、SQLite、直连传输、本地队列、同步日志和设备副本 |
+| `server/domain` | 中心/客户端模式、loopback 管理 API/UI、独立 P2P 与设备监听 |
+| `apps/local-ui` | Svelte UI、安全 Markdown/LaTeX/代码渲染与浏览器测试 |
+| `apps/topicairn` | 统一单文件入口、两个实例测试、TLS 证书生成 |
+| `apps/cli` | 中心端点无界面管理工具 |
+| `server/relay` | 显式可选的旧密文中转适配器 |
 
-更多说明：[架构](docs/architecture.md)、[协议](docs/protocol.md)、[安全模型](docs/security.md)、[接口](docs/api.md)。
-
-这是工程 MVP，项目本身尚未经过独立安全审计。库审计不等于组合协议已被审计。对外部署前需审查协议组合、速率限制、容量和运维策略。
+更多：[架构](docs/architecture.md)、[协议](docs/protocol.md)、[安全模型](docs/security.md)、[API](docs/api.md)。项目整体尚未经过独立安全审计；库审计不等于组合协议已被审计。

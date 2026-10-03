@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""One executable, five processes: two centers, relay, two independently keyed clients."""
+"""Two centers + two independently keyed clients; direct P2P or optional legacy relay."""
 import argparse
 import json
 from pathlib import Path
@@ -17,7 +17,9 @@ from smoke import api, free_port, wait_for, BODY, ENV
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--binary", type=Path, default=Path(__file__).resolve().parents[1] / "target/debug/topicairn")
-    binary = parser.parse_args().binary.resolve()
+    parser.add_argument("--direct", action="store_true", help="direct P2P between centers; no relay process")
+    args = parser.parse_args()
+    binary = args.binary.resolve()
     processes, logs = [], []
     # Native clients must not inherit an unrelated workstation proxy in this local test.
     env = {k: v for k, v in ENV.items() if k.lower() not in ("http_proxy", "https_proxy", "all_proxy")}
@@ -25,6 +27,7 @@ def main():
         root = Path(tmp)
         relay, alice, bob, one, two = ["http://127.0.0.1:" + str(free_port()) for _ in range(5)]
         device_url = "https://127.0.0.1:" + str(free_port())
+        peer_urls = {name: "https://127.0.0.1:" + str(free_port()) for name in ("alice", "bob")}
         tls = root / "tls"
         subprocess.run([str(binary), "tls-init", "--host", "127.0.0.1", "--out", str(tls)], env=env, capture_output=True, check=True)
         tls_http = urllib.request.build_opener(urllib.request.ProxyHandler({}), urllib.request.HTTPSHandler(context=ssl.create_default_context(cafile=str(tls / "ca.pem"))))
@@ -58,7 +61,8 @@ def main():
 
         def center(name, url):
             flags = [] if name == "bob" else ["--device-bind", device_url.split("://")[1], "--device-tls-cert", tls / "server.pem", "--device-tls-key", tls / "server-key.pem", "--device-ca", tls / "ca.pem", "--device-url", device_url]
-            p = start("serve", "--name", name, "--data", root / name, "--relay", relay, "--bind", url.split("://")[1], "--sync-seconds", "1", *flags)
+            transport = ["--peer-bind", peer_urls[name].split("://")[1], "--peer-url", peer_urls[name], "--peer-tls-cert", tls / "server.pem", "--peer-tls-key", tls / "server-key.pem", "--peer-ca", tls / "ca.pem"] if args.direct else ["--relay", relay]
+            p = start("serve", "--name", name, "--data", root / name, "--bind", url.split("://")[1], "--sync-seconds", "1", *transport, *flags)
             return p, ready(p, url, name)
 
         def client(name, url, first=False, domain=None):
@@ -70,14 +74,21 @@ def main():
             return api(url, f'/topics/{topic["id"]}/messages', token)
 
         try:
-            r = start("relay", "--bind", relay.split("://")[1], "--database", root / "relay.sqlite")
-            wait_for(lambda: api(relay, "/health"))
+            if not args.direct:
+                start("relay", "--bind", relay.split("://")[1], "--database", root / "relay.sqlite")
+                wait_for(lambda: api(relay, "/health"))
             a, at = center("alice", alice)
             b, bt = center("bob", bob)
             ac = api(alice, "/identity", at)
             bc = api(bob, "/identity", bt)
-            api(alice, "/peers", at, bc)
-            api(bob, "/peers", bt, ac)
+            if args.direct:
+                api(alice, "/p2p/peers", at, api(bob, "/p2p/contact", bt))
+                api(bob, "/p2p/peers", bt, api(alice, "/p2p/contact", at))
+                assert api(alice, "/status", at)["transport"] == "direct"
+                assert api(bob, "/status", bt)["transport"] == "direct"
+            else:
+                api(alice, "/peers", at, bc)
+                api(bob, "/peers", bt, ac)
             api(bob, "/sync", bt, {})
             math = api(alice, "/topics", at, {"peer_id": bc["user_id"], "title": "设备同步·数学"})
             nas = api(alice, "/topics", at, {"peer_id": bc["user_id"], "title": "设备同步·NAS"})
@@ -165,10 +176,13 @@ def main():
             a, at = center("alice", alice)
             assert any(d["revoked"] and d["card"]["id"] == cards[0]["id"] for d in api(alice, "/devices", at)["devices"])
             assert api(one, "/sync", t1, {})["errors"]
-            with sqlite3.connect(root / "relay.sqlite") as db:
-                raw = " ".join(row[0] for row in db.execute("SELECT envelope FROM envelopes WHERE envelope IS NOT NULL"))
-                assert "客户端发送" not in raw and "离线排队" not in raw
-            print("PASS: unified binary, 5 real processes; independent devices; old incoming/SENT history; exact Markdown; client mutations; offline queue/client+center restarts; dedupe; per-device ACK; TLS trust/version enforcement; no remote admin; permanent revocation")
+            if args.direct:
+                assert not (root / "relay.sqlite").exists()
+            else:
+                with sqlite3.connect(root / "relay.sqlite") as db:
+                    raw = " ".join(row[0] for row in db.execute("SELECT envelope FROM envelopes WHERE envelope IS NOT NULL"))
+                    assert "客户端发送" not in raw and "离线排队" not in raw
+            print(f"PASS: unified binary, {4 if args.direct else 5} real processes; {'direct P2P, no relay' if args.direct else 'legacy relay'}; independent devices; old incoming/SENT history; exact Markdown; client mutations; offline queue/client+center restarts; dedupe; per-device ACK; TLS trust/version enforcement; no remote admin; permanent revocation")
         except Exception:
             for log in logs:
                 log.flush()
