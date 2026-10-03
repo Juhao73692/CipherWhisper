@@ -1,0 +1,14 @@
+/target
+**/node_modules
+**/dist
+*.sqlite*
+*.db*
+*.lockfile
+.env
+.env.*
+!.env.example
+admin.token
+/domain-data/
+__pycache__/
+*.pyc
+.DS_Store

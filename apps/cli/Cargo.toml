@@ -1,0 +1,14 @@
+[package]
+name = "topicairn-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+[dependencies]
+anyhow.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+clap.workspace = true
+topicairn-core.workspace = true
+topicairn-protocol.workspace = true
+serde.workspace = true
+zeroize = "1"

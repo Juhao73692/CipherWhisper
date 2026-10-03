@@ -1,0 +1,26 @@
+[package]
+name = "topicairn-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+sha2.workspace = true
+hex.workspace = true
+vodozemac.workspace = true
+rusqlite.workspace = true
+reqwest.workspace = true
+topicairn-protocol.workspace = true
+argon2 = "0.6"
+chacha20poly1305 = "0.11"
+getrandom = "0.4"
+zeroize = { version = "1", features = ["derive"] }
+fs2 = "0.4"
+[dev-dependencies]
+tokio.workspace = true
+tempfile = "3"
+topicairn-relay.workspace = true
+axum.workspace = true
