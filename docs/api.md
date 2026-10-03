@@ -20,7 +20,7 @@ Relay has no Topic, search, Markdown, rendering, reply or attachment APIs. Datab
 
 ## Center's loopback management API
 
-This is Local Trust Layer administration, **not** the external peer protocol and **not** domain-internal device networking. The binary refuses non-loopback binds. Every route requires `Authorization: Bearer <64-character admin.token>`; there is no unauthenticated status/identity route. Token is generated locally, retained across restart and never logged.
+This is Local Trust Layer administration, **not** the external peer protocol and **not** domain-internal device networking. The binary refuses non-loopback binds. Every management route requires `Authorization: Bearer <64-character admin.token or browser-session token>`; there is no unauthenticated status/identity route. Token is generated locally, retained across restart and never logged.
 
 | Method/path | JSON/query | Result |
 |---|---|---|
@@ -32,7 +32,7 @@ This is Local Trust Layer administration, **not** the external peer protocol and
 | `POST /topics/{id}` | `{title,archived}` | Topic; queues encrypted topic.update |
 | `GET /topics/{id}/messages` | none | Message[]; Markdown source |
 | `POST /topics/{id}/messages` | `{body,reply_to?:uuid}` | Message in `queued` state; creates initial session when needed |
-| `GET /search?q=<phrase>` | literal phrase, URL encoded | Matching Message[]; max 100; SQLite FTS5 only |
+| `GET /search?q=<phrase>` | literal phrase, URL encoded | Matching Message[]; max 100; local SQLite FTS5 trigram substrings; one/two-character terms use bound literal scanning |
 | `POST /sync` | ignored body, e.g. `{}` | `{sent,received,acknowledged,delivered,errors}` |
 | `GET /outbox` | none | `[{id,accepted,attempts,nextAttempt,lastError}]`, excludes ciphertext |
 | `GET /status` | none | `{protocol,lastSync}`; background sync report |
@@ -51,7 +51,11 @@ Message return shape:
 {"id":"uuid","topicId":"uuid","senderId":"td_...","timestamp":0,"body":"$x^2$","format":"markdown","replyTo":null,"delivery":"queued"}
 ```
 
-All content is source text. A future renderer must escape/sanitize HTML and be implemented independently. Sending to an archived Topic is rejected; explicitly unarchive first. Sending can fail if the first session needs a Relay that is unavailable or has no prekeys. After session establishment, local sends can queue while Relay is offline.
+All API content is source text. The embedded local Svelte UI renders it with markdown-it / KaTeX / Shiki and final DOMPurify sanitization. Sending to an archived Topic is rejected; explicitly unarchive first. Sending can fail if the first session needs a Relay that is unavailable or has no prekeys. After session establishment, local sends can queue while Relay is offline.
+
+Public UI routes: `GET /` / `GET /index.html` and embedded `/assets/*`; they contain no local secrets or history. `POST /ui/session {code}` exchanges a single-use, 90-second bootstrap code for an in-memory browser token (401 when expired/used/invalid). `serve --open` sends this code to the browser via URL fragment, never the permanent admin token. Browser tokens expire on server restart; page reload requires another unlock.
+
+All routes check exact local Host and same Origin when supplied, reject cross-site Sec-Fetch-Site, emit no CORS permissions, and set restrictive CSP / no-store / frame protections. Wrong host/origin: 403. UI rendering and operation details: [local-ui.md](local-ui.md).
 
 Management API authentication failures are 401. Application validation failures are 400 with `{error}`. A successful `/sync` request can include per-job errors; jobs remain durable for retries. Background synchronization is serialized with management mutations through one endpoint mutex to avoid concurrent ratchet advances.
 

@@ -544,3 +544,45 @@ async fn tls_ca_and_hostname_verification_are_enforced() -> Result<()> {
     let _ = task.await;
     Ok(())
 }
+
+#[test]
+fn chinese_substring_search_upgrades_existing_history() -> Result<()> {
+    let Pair {
+        root,
+        mut alice,
+        mut bob,
+    } = pair()?;
+    let peer = bob.contact_card()?.user_id;
+    let topic = alice.create_topic(&peer, "中文检索")?;
+    let body = "相对论笔记：数学推导。Literal 100%_quote\" token";
+    bob.receive(&alice.queue_event(&peer, event(&topic, body))?)?;
+    assert_eq!(bob.search("相对论")?.len(), 1);
+    assert_eq!(bob.search("数学")?.len(), 1);
+    assert_eq!(bob.search("推")?.len(), 1);
+    assert_eq!(bob.search("100%_quote\"")?.len(), 1);
+    assert_eq!(bob.search("LITERAL")?.len(), 1);
+    assert!(bob.search("\" OR missing")?.is_empty());
+    drop(bob);
+    // Simulate a pre-UI database with the original unicode61 whole-word index.
+    let legacy = Connection::open(root.path().join("bob/domain.sqlite"))?;
+    legacy.execute_batch(
+        "DELETE FROM metadata WHERE key='search-index';
+    DROP TABLE messages_fts;
+    CREATE VIRTUAL TABLE messages_fts USING fts5(body,content='messages',content_rowid='rowid');
+    INSERT INTO messages_fts(messages_fts) VALUES('rebuild');",
+    )?;
+    let count: i64 = legacy.query_row(
+        "SELECT count(*) FROM messages_fts WHERE messages_fts MATCH '\"相对论\"'",
+        [],
+        |r| r.get(0),
+    )?;
+    assert_eq!(count, 0);
+    drop(legacy);
+    let bob = Endpoint::open(root.path().join("bob"), PASS, None, RELAY)?;
+    assert_eq!(bob.search("相对论")?[0].body, body);
+    assert_eq!(bob.messages(&topic.id)?[0].body, body);
+    drop(bob);
+    let bob = Endpoint::open(root.path().join("bob"), PASS, None, RELAY)?;
+    assert_eq!(bob.search("相对论")?.len(), 1);
+    Ok(())
+}

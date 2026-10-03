@@ -1,6 +1,6 @@
 # Personal Trust Domain 中心端点架构
 
-一个中心端点代表一个用户身份和一个 Personal Trust Domain。域内部如何授权设备、同步历史、存储或备份不属于本项目的网络协议。当前端点使用本机 SQLite 和本机管理 API；CLI 是管理工具。
+一个中心端点代表一个用户身份和一个 Personal Trust Domain。域内部如何授权设备、同步历史、存储或备份不属于本项目的网络协议。当前端点使用本机 SQLite 和本机管理 API；CLI 和本机 Svelte UI 是管理工具。UI 与 loopback API 同源，静态资产由 Rust 内嵌，运行时无需 Node；消息渲染不进入协议/Relay 层。
 
 ## 四层
 

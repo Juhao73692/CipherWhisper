@@ -43,3 +43,11 @@ Relay HTTP 认证签名绑定 method、完整 path/query、精确 body SHA-256�
 Relay 可以丢弃、延迟消息、消耗公开 prekeys 或谎报 delivery 状态，并能拒绝服务；E2EE 不保证 Relay 可用性。当前 ACK/delivery 是 Relay 报告，不是对端签名的加密送达证明。Relay 本身不拥有解密私钥。每收件人未 ACK 队列限制 10000，单消息 Markdown 最大 64 KiB；已 ACK tombstone、nonce/prekey tables 的长期清理和公网防滥用不完整。当前适用于受控部署；公网部署需限流、存储配额、日志策略和权限隔离。
 
 附件、编辑、删除、已读、群聊、Federation、域内设备协议均未实现，不能从现有 token API 推导这些未来功能的安全性质。
+
+## 本机 UI
+
+本机浏览器通过 Bearer 认证读取已解密历史，不向外部 Peer 提供新的浏览器协议。全部 JS、CSS、公式字体和语法定义嵌入同一个可执行文件，无 CDN。Markdown 原始 HTML 按文本显示；KaTeX 禁用 trust、隔离宏并限制展开次数与尺寸；Shiki 使用 JavaScript regex engine；最终 HTML 经 DOMPurify 清洗。远程图片不加载，避免泄露阅读行为/IP。
+
+`--open` 使用独立的随机 256-bit 一次性 bootstrap code，90 秒有效，以 URL fragment 传给浏览器，不进入 HTTP URL 或服务日志；换取的随机会话 Bearer 只保存在页面内存，摘要留在服务进程，服务重启失效。永久管理令牌不注入静态资产；手动解锁仍可使用 admin.token。页面锁定/刷新清除授权，不停止服务。
+
+精确校验 loopback Host、Origin 和 Sec-Fetch-Site，防止跨站页面或 DNS rebinding 调用管理 API；所有消息路由仍要求令牌。设置 no-store、nosniff、frame-ancestors none、no-referrer 和仅本机资源的 CSP。KaTeX/Shiki 的生成样式需要 style-src unsafe-inline；script-src 仅允许本机已打包脚本，禁止原始 HTML/script 注入。UI 端口不能通过反向代理暴露到网络。

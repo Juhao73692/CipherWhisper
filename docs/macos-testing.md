@@ -8,7 +8,7 @@
 Alice ── E2EE ── Relay（A:8787） ── E2EE ── Bob
 ```
 
-Relay 与 Alice 端点是独立角色，拥有不同存储：Relay 不获得 Bob/Alice 的消息解密密钥。第一轮使用短命的 `admin` 命令操作各自中心端点，Relay 持续运行；这使离线首次发送容易验证。`serve` 用于之后连续后台同步，不涉及桌面 UI 或消息渲染。
+Relay 与 Alice 端点是独立角色，拥有不同存储：Relay 不获得 Bob/Alice 的消息解密密钥。第一轮使用短命的 `admin` 命令操作各自中心端点，Relay 持续运行；这使离线首次发送容易验证。`serve --open` 连续同步并打开内置本机 UI，可渲染 Markdown、LaTeX 和代码。
 
 ## 1. 两台电脑准备
 
@@ -108,7 +108,7 @@ ta send --topic "$TOPIC_ID" --body '你好 Bob，$E=mc^2$'
 ta sync
 ```
 
-`send` 返回本地 `queued` 消息；`sync` 把同一密文 Envelope 发给 Relay，`errors` 应为空。Bob 此时不需要运行中心端点。Markdown 是原始字符串，不渲染。较长内容可通过 `--file message.md` 或 stdin 输入。
+`send` 返回本地 `queued` 消息；`sync` 把同一密文 Envelope 发给 Relay，`errors` 应为空。Bob 此时不需要运行中心端点。CLI 输出保留 Markdown 原文；本机 UI 可以渲染。较长内容可通过 `--file message.md` 或 stdin 输入。
 
 ## 5. Bob 上线接收、回复
 
@@ -153,7 +153,7 @@ B 执行 `tb sync`、`tb topics`；数学和 NAS 的历史分别查询，不混�
 
 重新启动电脑/终端时，保留原数据目录、口令、Relay SQLite 和证书；按上述命令再次运行即可继续会话。不要从陈旧快照覆盖 ratchet 数据库。本版没有口令遗失恢复。
 
-## 7. 可选：连续运行中心端点服务
+## 7. 使用本机 UI 连续聊天
 
 完成 CLI 验证后，在对应电脑带着已设置的口令启动：
 
@@ -161,19 +161,23 @@ A：
 
 ```sh
 ./topicairn serve --data alice --relay https://127.0.0.1:8787 \
-  --relay-ca relay-ca.pem --bind 127.0.0.1:8790
+  --relay-ca relay-ca.pem --bind 127.0.0.1:8790 --open
 ```
 
 B：
 
 ```sh
 ./topicairn serve --data bob --relay https://192.168.1.10:8787 \
-  --relay-ca relay-ca.pem --bind 127.0.0.1:8790
+  --relay-ca relay-ca.pem --bind 127.0.0.1:8790 --open
 ```
+
+`--open` 会打开本机浏览器并用 90 秒内有效的一次性链接解锁。若无法自动打开，访问 `http://127.0.0.1:8790/` 并粘贴自己数据目录的 `admin.token`；不要交换这个管理令牌。
+
+界面有三栏：联系人、话题、对话。可以在左下角下载公开身份卡，通过联系人 `＋` 导入对方，点话题 `＋` 创建独立对话。支持编写/预览、公式与代码高亮、回复、查看原文、本地搜索、重命名、归档和恢复。按 `⌘/Ctrl + Enter` 发送。已经完成前面的 CLI 身份交换时，直接使用已有联系人和历史即可。刷新页面会锁定并清除内存草稿，历史仍保存在 SQLite。
 
 端口 8790 是各自本机管理 API，自动同步默认每 5 秒一次，不需两台电脑互相访问这个端口。只有 HTTPS Relay 的 8787 需要跨电脑可达。域内设备传输没有实现。
 
-同一数据目录的 serve 和 admin 不能同时打开；想用 ta/tb 就先 Ctrl-C 停止 serve，或通过本机管理 API 发送。例如 A 的另一个终端：
+同一数据目录的 serve 和 admin 不能同时打开；想用 ta/tb 就先 Ctrl-C 停止 serve，或通过 UI / 本机管理 API 发送。例如 A 的另一个终端：
 
 ```sh
 curl --noproxy '*' --config - http://127.0.0.1:8790/topics <<EOF_CONFIG
@@ -192,4 +196,4 @@ EOF_CONFIG
 - **domain is already open**：该电脑上对应数据目录的 serve 尚在运行，先停止或改用本机 API。
 - **wrong passphrase**：使用该数据目录创建时的口令；重新开终端后必须重新 export。
 
-打包的是工程 MVP，不含桌面客户端或完整 Federation。ARM64 的实际进程测试和 Intel 架构的交叉构建结果会在交付说明中分别注明。
+打包的是包含本机浏览器 UI 的工程 MVP，不含完整 Federation 或域内设备传输。ARM64 的实际进程测试和 Intel 架构的交叉构建结果会在交付说明中分别注明。

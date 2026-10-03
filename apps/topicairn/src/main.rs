@@ -4,7 +4,7 @@ mod tls;
 #[command(
     name = "topicairn",
     version,
-    about = "Topicairn: one headless executable for Trust Domain endpoints and opaque relays"
+    about = "Topicairn: one executable for local topic chat, Trust Domain endpoints and opaque relays"
 )]
 struct Args {
     #[command(subcommand)]
@@ -14,7 +14,7 @@ struct Args {
 enum Command {
     /// Run an opaque ciphertext relay. Remote binds require TLS.
     Relay(topicairn_relay::RelayArgs),
-    /// Run this computer's Trust Domain center (loopback administration API).
+    /// Run this computer's Trust Domain center and embedded local UI (--open).
     Serve(topicairn_domain::DomainArgs),
     /// Create identities, manage peers/topics and send/sync without running a daemon.
     Admin(topicairn_cli::AdminArgs),

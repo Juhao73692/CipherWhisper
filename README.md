@@ -2,7 +2,7 @@
 
 **Topic + Cairn**：用独立话题组织消息，用可信节点连接个人可信域。
 
-这是一个无界面的 Rust 服务端 MVP。协议端点是两个 Personal Trust Domain 的**中心计算机**，不是域内设备。一个中心端点拥有一个稳定身份，理解 Topic 和 Markdown，保存明文历史；中转 Relay 只保存公钥、路由元数据和密文。
+这是一个带有本机聊天 UI 的 Rust 中心端点 MVP。协议端点是两个 Personal Trust Domain 的**中心计算机**，不是域内设备。一个中心端点拥有一个稳定身份，理解 Topic 和 Markdown，保存明文历史；中转 Relay 只保存公钥、路由元数据和密文。
 
 ```text
 Alice Trust Domain center  ── authenticated E2EE ──  Bob Trust Domain center
@@ -10,7 +10,7 @@ Alice Trust Domain center  ── authenticated E2EE ──  Bob Trust Domain ce
                   └────────── offline queue ────────────┘
 ```
 
-当前没有桌面客户端、浏览器客户端、消息渲染、域内设备同步、多设备、群聊或 Federation。管理 API 仅供本机管理，不是设备通信协议。
+内置本机浏览器 UI：联系人 / 话题 / 对话三栏，Markdown、LaTeX 和代码高亮。UI 与管理 API 只允许本机访问；不包含域内设备同步、多设备、群聊或 Federation。
 
 ## 已实现
 
@@ -18,14 +18,17 @@ Alice Trust Domain center  ── authenticated E2EE ──  Bob Trust Domain ce
 - 离线首次发送：签名 fallback prekey + Relay 原子领取 one-time prekey；使用 vodozemac Olm 3DH 和 Double Ratchet。
 - 私钥/ratchet 状态：Argon2id 口令派生密钥 + 随机 nonce 的 XChaCha20-Poly1305 加密，绑定状态记录。
 - SQLite：peers、topics、messages、identity、sessions、outbox、接收去重、待 ACK，FTS5 仅本地检索。
-- Markdown/LaTeX/code 的源文完整传输及存储，不解析、不执行、不渲染 HTML。
+- Markdown/LaTeX/code 源文完整传输及存储；本机使用 markdown-it、KaTeX、Shiki 和 DOMPurify 安全渲染。
 - Topic 创建、独立历史、回复引用、标题/归档的加密事件；解密后校验 Peer 与 Topic 所属关系。
 - 持久化离线队列、游标分页、幂等发送、接收去重、持久化后 ACK、送达状态、指数退避重试。
-- 无界面的中心端点服务、密文 Relay、管理 CLI；两个中心端点共用一个简单 Relay。
+- 内置本机 UI：身份卡导出/导入、独立话题、消息回复、原文、预览、草稿、本地搜索、归档、投递状态与重试。
+- 中心端点服务、密文 Relay、管理 CLI；两个中心端点共用一个简单 Relay。
 
 ## 单文件 macOS 版本
 
 运行 `./scripts/package-macos.sh` 构建 `dist/topicairn`：Universal arm64 + x86_64，最低 macOS 13，只需要 macOS 系统库。一个可执行文件包含 `relay`、`serve`、`admin`、`tls-init`，无需用户安装 Rust、Node 或反向代理。打包步骤会生成本地 ad-hoc 签名、SHA-256 校验和及附带使用指南的 tar.gz。
+
+本机 UI 的用法见 [UI 指南](docs/local-ui.md)。在原 `serve` 命令末尾加 `--open` 即可自动打开并解锁。
 
 两台电脑的完整操作步骤见 [macOS 测试指南](docs/macos-testing.md)。Relay 可使用内置 HTTPS，`tls-init` 生成测试 CA 和服务器证书；中心端点使用 `--relay-ca ca.pem` 信任该 CA，继续验证证书和主机名。测试 TLS 私钥不会进入 Git。
 
@@ -33,17 +36,22 @@ Alice Trust Domain center  ── authenticated E2EE ──  Bob Trust Domain ce
 
 2026-10-03 核对并安装的最新稳定工具：Rust/Cargo **1.99.0**（Rust 2024 edition），rustup **1.29.1**，Node **26.10.0 Current**，npm **12.2.0**，pnpm **12.8.1**。
 
-当前服务端只需要 Rust。`rust-toolchain.toml` 固定工具链，`Cargo.lock` 固定完整依赖。核心依赖：vodozemac 0.11.1、Axum 0.8.9、Tokio 1.53.1、reqwest 0.13.5、rusqlite 0.40.2、Argon2 0.6.0、chacha20poly1305 0.11.0。Svelte/Tauri/Vite 不属于当前交付范围。
+只构建服务端需要 Rust；修改前端和打包时使用 Node/npm。`rust-toolchain.toml` 固定工具链，`Cargo.lock` 固定完整依赖。核心依赖：vodozemac 0.11.1、Axum 0.8.9、Tokio 1.53.1、reqwest 0.13.5、rusqlite 0.40.2、Argon2 0.6.0、chacha20poly1305 0.11.0。前端锁定 Svelte 5.57.1、Vite 8.3.2、TypeScript 6.0.3（Svelte 检查器支持的最新版本）、KaTeX 0.19.0、Shiki 4.5.0、DOMPurify 3.4.16。无需安装 Tauri。
 
 ## 构建与验证
 
 ```sh
+npm --prefix apps/local-ui ci
+npm --prefix apps/local-ui run check
+npm --prefix apps/local-ui test
+npm --prefix apps/local-ui run build
 cargo build --workspace --locked
 cargo test --workspace --locked
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo fmt --all -- --check
 python3 scripts/smoke.py
 python3 scripts/smoke.py --binary target/debug/topicairn --tls
+npm --prefix apps/local-ui run test:browser
 ```
 
 测试需要允许 localhost TCP 监听。`smoke.py` 使用临时数据目录和动态端口，启动 Alice 中心端点、Bob 中心端点、Relay 三个真实进程，验证离线首次发送、双 Topic、ACK、三方重启、回复及网络恢复；结束时停止全部测试进程并删除测试数据。
@@ -103,7 +111,7 @@ Bob 发布 prekeys 后可以完全离线，Alice 仍可建立第一次会话。�
 
 首次直接运行服务可以加 `--name Alice` 创建身份。服务自动发布 prekeys、轮询队列、投递、重试和 ACK。启动后生成数据目录内权限为 0600 的 `admin.token`；所有管理 API 均要求 `Authorization: Bearer <token>`。状态错误可从 `/status` 查看，服务日志不输出消息正文和密钥。
 
-服务运行期间使用管理 API，不要并发打开同一个目录的 CLI。文件锁防止两个进程同时修改身份或 ratchet。
+服务运行期间使用本机 UI 或管理 API，不要并发打开同一个目录的 CLI。文件锁防止两个进程同时修改身份或 ratchet。
 
 ```sh
 curl --noproxy '*' --config - http://127.0.0.1:8790/identity <<EOF_CONFIG
@@ -120,7 +128,8 @@ EOF_CONFIG
 | `crates/protocol` | 版本、Contact Card、签名 prekeys、HTTP 认证、Envelope、加密 Payload/Event types |
 | `crates/core` | 中心端点的身份、E2EE、密钥保险库、SQLite、Topic、outbox/ACK、Relay client |
 | `server/relay` | 只处理公钥和 opaque ciphertext 的持久化路由服务 |
-| `server/domain` | 中心端点守护进程及 loopback 管理 API |
+| `server/domain` | 中心端点守护进程、loopback 管理 API、嵌入式 UI 资产 |
+| `apps/local-ui` | Svelte 本机 UI、安全 Markdown/LaTeX/代码渲染与浏览器测试 |
 | `apps/cli` | 中心端点的无界面管理工具 |
 | `apps/topicairn` | 统一单文件入口和测试 TLS 证书生成 |
 

@@ -21,9 +21,13 @@ use tokio::sync::{Mutex, watch};
 use topicairn_core::{Endpoint, SyncReport};
 use topicairn_protocol::*;
 use zeroize::Zeroizing;
+mod ui;
 
 #[derive(Parser)]
-#[command(about = "Topicairn headless Personal Trust Domain center", version)]
+#[command(
+    about = "Topicairn Personal Trust Domain center with a local browser UI",
+    version
+)]
 pub struct DomainArgs {
     #[arg(long, default_value = "domain-data")]
     pub data: PathBuf,
@@ -45,12 +49,17 @@ pub struct DomainArgs {
     pub passphrase: String,
     #[arg(long, default_value = "5")]
     pub sync_seconds: u64,
+    /// Open and unlock the embedded UI using a single-use, 90-second local link.
+    #[arg(long)]
+    pub open: bool,
 }
 #[derive(Clone)]
 struct AppState {
     domain: Arc<Mutex<Endpoint>>,
     token_digest: Arc<String>,
     last_sync: Arc<Mutex<Option<SyncReport>>>,
+    browser: Arc<Mutex<ui::BrowserAuth>>,
+    ui_hosts: Arc<Vec<String>>,
 }
 struct ApiError(String);
 impl IntoResponse for ApiError {
@@ -102,13 +111,13 @@ async fn authenticate(
         .get("authorization")
         .and_then(|h| h.to_str().ok())
         .and_then(|h| h.strip_prefix("Bearer "));
-    let valid = supplied.is_some_and(|t| {
-        bool::from(
-            digest(t.as_bytes())
-                .as_bytes()
-                .ct_eq(state.token_digest.as_bytes()),
-        )
-    });
+    let valid = if let Some(t) = supplied.filter(|t| t.len() == 64) {
+        let hash = digest(t.as_bytes());
+        bool::from(hash.as_bytes().ct_eq(state.token_digest.as_bytes()))
+            || state.browser.lock().await.accepts(&hash)
+    } else {
+        false
+    };
     if !valid {
         return (
             StatusCode::UNAUTHORIZED,
@@ -206,7 +215,9 @@ async fn search(State(state): State<AppState>, Query(input): Query<Search>) -> A
     Ok(Json(state.domain.lock().await.search(&input.q)?))
 }
 async fn sync(State(state): State<AppState>) -> Api<SyncReport> {
-    Ok(Json(state.domain.lock().await.sync(true).await?))
+    let report = state.domain.lock().await.sync(true).await?;
+    *state.last_sync.lock().await = Some(report.clone());
+    Ok(Json(report))
 }
 async fn outbox(State(state): State<AppState>) -> Api<serde_json::Value> {
     Ok(Json(
@@ -235,10 +246,17 @@ pub async fn run(args: DomainArgs) -> Result<()> {
     )?;
     drop(passphrase);
     let token = token(&args.data)?;
+    let listener = tokio::net::TcpListener::bind(args.bind).await?;
+    let address = listener.local_addr()?;
     let state = AppState {
         domain: Arc::new(Mutex::new(domain)),
         token_digest: Arc::new(digest(token.as_bytes())),
         last_sync: Arc::new(Mutex::new(None)),
+        browser: ui::auth_state(),
+        ui_hosts: Arc::new(vec![
+            address.to_string(),
+            format!("localhost:{}", address.port()),
+        ]),
     };
     drop(token);
     let app = Router::new()
@@ -253,8 +271,19 @@ pub async fn run(args: DomainArgs) -> Result<()> {
         .route("/status", get(status))
         .layer(DefaultBodyLimit::max(MAX_BODY * 2))
         .layer(middleware::from_fn_with_state(state.clone(), authenticate))
+        .route("/ui/session", post(ui::session))
+        .fallback(get(ui::assets))
+        .layer(middleware::from_fn_with_state(state.clone(), ui::guard))
         .with_state(state.clone());
-    let listener = tokio::net::TcpListener::bind(args.bind).await?;
+    // Routes added after authenticate are public assets / single-use bootstrap only.
+    println!("Local UI: http://{address}/");
+    if args.open {
+        let code = state.browser.lock().await.bootstrap()?;
+        let url = Zeroizing::new(format!("http://{address}/#bootstrap={}", code.as_str()));
+        if let Err(e) = ui::open(&url) {
+            eprintln!("Could not open browser: {e}; open the Local UI URL and use admin.token.");
+        }
+    }
     let (shutdown, mut stop) = watch::channel(false);
     let worker = tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(args.sync_seconds));

@@ -1,4 +1,4 @@
-name: server-ci
+name: topicairn-ci
 on: [push, pull_request]
 permissions:
   contents: read
@@ -7,6 +7,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .node-version
+          cache: npm
+          cache-dependency-path: apps/local-ui/package-lock.json
+      - name: Frontend checks, rendering tests and reproducible assets
+        run: |
+          npm --prefix apps/local-ui ci
+          npm --prefix apps/local-ui run format:check
+          npm --prefix apps/local-ui run check
+          npm --prefix apps/local-ui test
+          npm --prefix apps/local-ui run build
+          git diff --exit-code -- server/domain/ui
       - name: Install pinned Rust toolchain
         run: rustup toolchain install 1.99.0 --profile minimal --component rustfmt --component clippy
       - name: Formatting
@@ -21,3 +34,8 @@ jobs:
         run: python3 scripts/smoke.py
       - name: Single-executable HTTPS smoke test
         run: python3 scripts/smoke.py --binary target/debug/topicairn --tls
+      - name: Browser integration tests
+        working-directory: apps/local-ui
+        run: |
+          npx playwright install --with-deps chromium
+          npm run test:browser

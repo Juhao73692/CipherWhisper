@@ -16,3 +16,7 @@ __pycache__/
 /dist/
 /relay-tls/
 server-key.pem
+
+/artifacts/
+/apps/local-ui/test-results/
+/apps/local-ui/playwright-report/

@@ -34,7 +34,7 @@ pub fn open(dir: &Path) -> Result<(Connection, File)> {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
     }
-    let db = Connection::open(path)?;
+    let mut db = Connection::open(path)?;
     db.busy_timeout(std::time::Duration::from_secs(5))?;
     db.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON;
     CREATE TABLE IF NOT EXISTS metadata(key TEXT PRIMARY KEY,value TEXT NOT NULL);
@@ -51,5 +51,24 @@ pub fn open(dir: &Path) -> Result<(Connection, File)> {
     CREATE TRIGGER IF NOT EXISTS messages_insert AFTER INSERT ON messages BEGIN INSERT INTO messages_fts(rowid,body) VALUES(new.rowid,new.body); END;
     CREATE TRIGGER IF NOT EXISTS messages_delete AFTER DELETE ON messages BEGIN INSERT INTO messages_fts(messages_fts,rowid,body) VALUES('delete',old.rowid,old.body); END;
     CREATE TRIGGER IF NOT EXISTS messages_update AFTER UPDATE OF body ON messages BEGIN INSERT INTO messages_fts(messages_fts,rowid,body) VALUES('delete',old.rowid,old.body); INSERT INTO messages_fts(rowid,body) VALUES(new.rowid,new.body); END;")?;
+    let indexed: bool = db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM metadata WHERE key='search-index' AND value='trigram-v1')",
+        [],
+        |row| row.get(0),
+    )?;
+    if !indexed {
+        // Rebuild the plaintext index transactionally, including existing histories.
+        // Trigrams allow literal substrings within Chinese text without word boundaries.
+        let tx = db.transaction()?;
+        tx.execute_batch("DROP TRIGGER messages_insert; DROP TRIGGER messages_delete; DROP TRIGGER messages_update;
+        DROP TABLE messages_fts;
+        CREATE VIRTUAL TABLE messages_fts USING fts5(body,content='messages',content_rowid='rowid',tokenize='trigram');
+        CREATE TRIGGER messages_insert AFTER INSERT ON messages BEGIN INSERT INTO messages_fts(rowid,body) VALUES(new.rowid,new.body); END;
+        CREATE TRIGGER messages_delete AFTER DELETE ON messages BEGIN INSERT INTO messages_fts(messages_fts,rowid,body) VALUES('delete',old.rowid,old.body); END;
+        CREATE TRIGGER messages_update AFTER UPDATE OF body ON messages BEGIN INSERT INTO messages_fts(messages_fts,rowid,body) VALUES('delete',old.rowid,old.body); INSERT INTO messages_fts(rowid,body) VALUES(new.rowid,new.body); END;
+        INSERT INTO messages_fts(messages_fts) VALUES('rebuild');
+        INSERT INTO metadata(key,value) VALUES('search-index','trigram-v1') ON CONFLICT(key) DO UPDATE SET value=excluded.value;")?;
+        tx.commit()?;
+    }
     Ok((db, lock))
 }

@@ -28,7 +28,7 @@ struct Ciphertext {
     session_id: String,
     message: OlmMessage,
 }
-#[derive(Default, Debug, Serialize)]
+#[derive(Clone, Default, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SyncReport {
     pub sent: usize,
@@ -457,6 +457,15 @@ impl Endpoint {
             !query.trim().is_empty() && query.len() <= 512,
             "invalid search query"
         );
+        let query = query.trim();
+        if query.chars().count() < 3 {
+            // FTS5 trigrams cannot index one/two-character queries. Bound literal
+            // substring scanning stays local and also handles short Chinese terms.
+            let mut stmt = self.db.prepare("SELECT * FROM messages WHERE instr(lower(body),lower(?))>0 ORDER BY timestamp DESC,rowid DESC LIMIT 100")?;
+            return Ok(stmt
+                .query_map([query], message_row)?
+                .collect::<rusqlite::Result<Vec<_>>>()?);
+        }
         let mut stmt=self.db.prepare("SELECT m.* FROM messages m JOIN messages_fts f ON m.rowid=f.rowid WHERE messages_fts MATCH ? ORDER BY rank LIMIT 100")?;
         // Quote as a phrase so untrusted user input is never an FTS expression or SQL.
         let phrase = format!("\"{}\"", query.replace('"', "\"\""));
