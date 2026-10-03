@@ -1,10 +1,10 @@
 # Personal Trust Domain 中心端点架构
 
-一个中心端点代表一个用户身份和一个 Personal Trust Domain。域内部如何授权设备、同步历史、存储或备份不属于本项目的网络协议。当前端点使用本机 SQLite 和本机管理 API；CLI 和本机 Svelte UI 是管理工具。UI 与 loopback API 同源，静态资产由 Rust 内嵌，运行时无需 Node；消息渲染不进入协议/Relay 层。
+一个中心端点代表一个用户身份和一个 Personal Trust Domain。域内授权设备/同步历史属于独立 Local Trust 协议，不进入外部 Peer 协议。中心和设备客户端由同一软件运行，分别使用本机 SQLite 和 loopback API/UI；中心另外提供认证设备 HTTPS 接口。静态资产由 Rust 内嵌，运行时无需 Node；消息渲染不进入外部协议/Relay 层。
 
 ## 四层
 
-1. **Local Trust**：中心计算机的管理 token、目录权限、数据库、服务生命周期。管理接口仅 loopback。未来域内设备协议在这一层独立设计。
+1. **Local Trust**：本机管理 token、目录权限、数据库、服务生命周期；独立设备身份、中心授权/撤销、TLS 1.3 连接和增量同步。管理接口仅 loopback。
 2. **Identity**：Ed25519 身份指纹、签名 Contact Card、固定 X25519 公钥和签名 prekeys。不存在由 Relay 替你决定 Peer 身份的隐式 TOFU。
 3. **Peer Transport**：签名 Envelope、Olm 3DH/Double Ratchet、Relay Queue、游标、幂等发送、重试、去重、ACK。
 4. **Conversation**：Topic、Markdown 源码、reply、topic.update。全部在加密 Payload 中。
@@ -37,6 +37,14 @@ Topic 创建先发生在本地。首条 Message 的加密 Event 包含 topic_id�
 
 当前 Topic 更新时间是秒精度的发送时间，topic.update 使用时间比较，不是 CRDT；同时改名的完美收敛策略、编辑/删除/已读事件及其冲突语义留待后续协议版本。回复支持目标晚于回复到达；目标后来到达时仍校验同 Topic。显示顺序按 timestamp 和本地插入顺序，不承诺跨端同秒消息的总排序。
 
+## 域内设备副本
+
+`serve` 唯一持有外部身份和 ratchet，`connect` 持有自己的设备签名私钥。设备卡由中心本机 UI 授权；中心签名配对配置绑定自身身份、设备和 TLS CA。设备拉取采用中心事务内触发器写入的物化日志，序号独立于时间戳。设备请求和响应均有身份签名，域内数据只经 TLS 1.3 传输。
+
+每设备游标/ACK 独立。副本在事务内应用整页和游标，完成后才 ACK；ACK 不删除共享历史。新设备可从头同步 incoming 和 SENT。命令固定 ID，中心的操作收据与数据、ratchet、outbox 原子提交；重试取原结果。实体版本防止晚到收据倒退投递状态；客户端话题修改带原标题/归档状态做冲突检查。外部 Peer 的同时修改仍沿用原 topic.update 的时间比较语义。
+
+`Workspace` 统一 center/replica 的本机 API，使 UI 的联系人/话题/消息/搜索在两种模式下复用。设备的明文缓存和待处理操作留在自己的 SQLite；未知网络结果保留重试，明确拒绝的结果可查看并手动删除。中心同步日志和收据尚未压缩，不能恢复旧快照。详见 [设备同步](device-sync.md)。
+
 ## 未来演进
 
 之后可替换 Peer Transport 的队列适配器为：
@@ -45,4 +53,4 @@ Topic 创建先发生在本地。首条 Message 的加密 Event 包含 topic_id�
 Alice center -> Alice home relay -> Bob home relay -> Bob center
 ```
 
-Client/Admin Protocol 与 Federation Protocol 分开；中转仍是 opaque ciphertext。路由地址独立于 Contact Card。身份迁移、设备授权、历史同步、SENT 密文 self-copy、设备撤销都需要独立设计；当前不会复制长期 private key 给域内设备。
+Device/Admin Protocol 与 Federation Protocol 分开；中转仍是 opaque ciphertext。路由地址独立于 Contact Card。身份迁移、Federation 和跨中心 SENT 密文存储仍需设计；当前设备通过域内加密连接取得自己中心的来往历史，不复制中心长期 private key。

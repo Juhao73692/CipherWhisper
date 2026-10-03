@@ -1,4 +1,4 @@
-//! Loopback administration API for a headless Trust Domain center.
+//! Shared loopback API/UI for a center or internal device client.
 use anyhow::{Result, ensure};
 use axum::{
     Json, Router,
@@ -21,7 +21,13 @@ use tokio::sync::{Mutex, watch};
 use topicairn_core::{Endpoint, SyncReport};
 use topicairn_protocol::*;
 use zeroize::Zeroizing;
+mod client;
+mod device_server;
 mod ui;
+mod workspace;
+pub use client::{ClientArgs, DeviceInitArgs, init_device, run_client};
+use topicairn_protocol::device::{DeviceCard, Pairing};
+use workspace::Workspace;
 
 #[derive(Parser)]
 #[command(
@@ -52,14 +58,27 @@ pub struct DomainArgs {
     /// Open and unlock the embedded UI using a single-use, 90-second local link.
     #[arg(long)]
     pub open: bool,
+    /// Dedicated HTTPS listener for enrolled devices; admin/UI stay on --bind.
+    #[arg(long, requires_all=["device_tls_cert","device_tls_key","device_ca","device_url"])]
+    pub device_bind: Option<std::net::SocketAddr>,
+    #[arg(long, requires = "device_bind")]
+    pub device_tls_cert: Option<PathBuf>,
+    #[arg(long, requires = "device_bind")]
+    pub device_tls_key: Option<PathBuf>,
+    #[arg(long, requires = "device_bind")]
+    pub device_ca: Option<PathBuf>,
+    /// HTTPS origin devices will use to reach this center (IP or DNS).
+    #[arg(long, requires = "device_bind")]
+    pub device_url: Option<String>,
 }
 #[derive(Clone)]
 struct AppState {
-    domain: Arc<Mutex<Endpoint>>,
+    domain: Arc<Mutex<Workspace>>,
     token_digest: Arc<String>,
     last_sync: Arc<Mutex<Option<SyncReport>>>,
     browser: Arc<Mutex<ui::BrowserAuth>>,
     ui_hosts: Arc<Vec<String>>,
+    device_config: Option<device_server::DeviceConfig>,
 }
 struct ApiError(String);
 impl IntoResponse for ApiError {
@@ -137,7 +156,7 @@ async fn add_peer(
     State(state): State<AppState>,
     Json(card): Json<ContactCard>,
 ) -> Api<serde_json::Value> {
-    state.domain.lock().await.add_peer(card)?;
+    state.domain.lock().await.add_peer(card).await?;
     Ok(Json(serde_json::json!({"ok":true})))
 }
 #[derive(Deserialize)]
@@ -164,7 +183,8 @@ async fn create_topic(State(state): State<AppState>, Json(input): Json<NewTopic>
             .domain
             .lock()
             .await
-            .create_topic(&input.peer_id, &input.title)?,
+            .create_topic(&input.peer_id, &input.title)
+            .await?,
     ))
 }
 #[derive(Deserialize)]
@@ -225,17 +245,77 @@ async fn outbox(State(state): State<AppState>) -> Api<serde_json::Value> {
     ))
 }
 async fn status(State(state): State<AppState>) -> Json<serde_json::Value> {
-    Json(serde_json::json!({"protocol":VERSION,"lastSync":*state.last_sync.lock().await}))
+    let workspace = state.domain.lock().await;
+    Json(
+        serde_json::json!({"protocol":VERSION,"mode":workspace.mode(),"device":workspace.device_info().ok().flatten(),"deviceServer":state.device_config.as_ref().map(|c|&c.server),"lastSync":*state.last_sync.lock().await}),
+    )
+}
+async fn devices(State(state): State<AppState>) -> Api<serde_json::Value> {
+    let mut w = state.domain.lock().await;
+    let records = if w.mode() == "server" {
+        w.devices()?
+    } else {
+        vec![]
+    };
+    Ok(Json(
+        serde_json::json!({"enabled":state.device_config.is_some(),"devices":records}),
+    ))
+}
+async fn enroll(State(state): State<AppState>, Json(card): Json<DeviceCard>) -> Api<Pairing> {
+    let config = state.device_config.as_ref().ok_or_else(|| {
+        anyhow::anyhow!("start the center with --device-bind and its TLS configuration first")
+    })?;
+    Ok(Json(state.domain.lock().await.center()?.authorize_device(
+        card,
+        &config.server,
+        &config.ca_pem,
+    )?))
+}
+async fn revoke(State(state): State<AppState>, Path(id): Path<String>) -> Api<serde_json::Value> {
+    state.domain.lock().await.center()?.revoke_device(&id)?;
+    Ok(Json(serde_json::json!({"ok":true})))
+}
+async fn device_pending(State(state): State<AppState>) -> Api<serde_json::Value> {
+    Ok(Json(
+        serde_json::to_value(state.domain.lock().await.pending()?).map_err(anyhow::Error::from)?,
+    ))
+}
+async fn discard(State(state): State<AppState>, Path(id): Path<String>) -> Api<serde_json::Value> {
+    state.domain.lock().await.discard(&id)?;
+    Ok(Json(serde_json::json!({"ok":true})))
+}
+struct Remote {
+    config: device_server::DeviceConfig,
+    listener: std::net::TcpListener,
+    tls: axum_server::tls_rustls::RustlsConfig,
 }
 pub async fn run(args: DomainArgs) -> Result<()> {
-    ensure!(
-        args.bind.ip().is_loopback(),
-        "management API is loopback only; domain-internal device networking is out of scope"
-    );
-    ensure!(
-        args.sync_seconds >= 1 && args.sync_seconds <= 300,
-        "sync interval must be 1..300 seconds"
-    );
+    let remote = if let Some(bind) = args.device_bind {
+        let ca = std::fs::read(args.device_ca.as_ref().unwrap())?;
+        ensure!(ca.len() <= 256 * 1024, "device CA too large");
+        let ca_pem = String::from_utf8(ca)?;
+        let server = args
+            .device_url
+            .as_ref()
+            .unwrap()
+            .trim_end_matches('/')
+            .to_owned();
+        topicairn_core::device::validate_server(&server, &ca_pem)?;
+        let tls = device_server::tls(
+            args.device_tls_cert.as_ref().unwrap(),
+            args.device_tls_key.as_ref().unwrap(),
+        )
+        .await?;
+        let listener = std::net::TcpListener::bind(bind)?;
+        listener.set_nonblocking(true)?;
+        Some(Remote {
+            config: device_server::DeviceConfig { server, ca_pem },
+            listener,
+            tls,
+        })
+    } else {
+        None
+    };
     let passphrase = Zeroizing::new(args.passphrase);
     let domain = Endpoint::open_with_ca(
         &args.data,
@@ -245,8 +325,34 @@ pub async fn run(args: DomainArgs) -> Result<()> {
         args.relay_ca.as_deref(),
     )?;
     drop(passphrase);
-    let token = token(&args.data)?;
-    let listener = tokio::net::TcpListener::bind(args.bind).await?;
+    serve_workspace(
+        args.data,
+        args.bind,
+        args.sync_seconds,
+        args.open,
+        Workspace::Center(domain),
+        remote,
+    )
+    .await
+}
+async fn serve_workspace(
+    data: PathBuf,
+    bind: std::net::SocketAddr,
+    sync_seconds: u64,
+    open: bool,
+    domain: Workspace,
+    remote: Option<Remote>,
+) -> Result<()> {
+    ensure!(
+        bind.ip().is_loopback(),
+        "management API/UI are loopback only; use the separate HTTPS device listener"
+    );
+    ensure!(
+        (1..=300).contains(&sync_seconds),
+        "sync interval must be 1..300 seconds"
+    );
+    let token = token(&data)?;
+    let listener = tokio::net::TcpListener::bind(bind).await?;
     let address = listener.local_addr()?;
     let state = AppState {
         domain: Arc::new(Mutex::new(domain)),
@@ -257,6 +363,7 @@ pub async fn run(args: DomainArgs) -> Result<()> {
             address.to_string(),
             format!("localhost:{}", address.port()),
         ]),
+        device_config: remote.as_ref().map(|r| r.config.clone()),
     };
     drop(token);
     let app = Router::new()
@@ -269,15 +376,40 @@ pub async fn run(args: DomainArgs) -> Result<()> {
         .route("/sync", post(sync))
         .route("/outbox", get(outbox))
         .route("/status", get(status))
-        .layer(DefaultBodyLimit::max(MAX_BODY * 2))
+        .route("/devices", get(devices).post(enroll))
+        .route("/devices/{id}/revoke", post(revoke))
+        .route("/device-pending", get(device_pending))
+        .route("/device-pending/{id}/discard", post(discard))
+        .layer(DefaultBodyLimit::max(MAX_BODY * 8))
         .layer(middleware::from_fn_with_state(state.clone(), authenticate))
         .route("/ui/session", post(ui::session))
         .fallback(get(ui::assets))
         .layer(middleware::from_fn_with_state(state.clone(), ui::guard))
         .with_state(state.clone());
-    // Routes added after authenticate are public assets / single-use bootstrap only.
+    let handle = remote.as_ref().map(|_| axum_server::Handle::new());
+    let remote_task = if let Some(remote) = remote {
+        println!(
+            "Enrolled-device HTTPS: {} (listener {})",
+            remote.config.server,
+            remote.listener.local_addr()?
+        );
+        let app = device_server::router(state.clone());
+        let handle = handle.clone().unwrap();
+        Some(tokio::spawn(async move {
+            axum_server::tls_rustls::from_tcp_rustls(remote.listener, remote.tls)?
+                .handle(handle)
+                .serve(app.into_make_service())
+                .await
+        }))
+    } else {
+        None
+    };
     println!("Local UI: http://{address}/");
-    if args.open {
+    println!(
+        "Local admin token file: {}",
+        data.join("admin.token").display()
+    );
+    if open {
         let code = state.browser.lock().await.bootstrap()?;
         let url = Zeroizing::new(format!("http://{address}/#bootstrap={}", code.as_str()));
         if let Err(e) = ui::open(&url) {
@@ -285,33 +417,45 @@ pub async fn run(args: DomainArgs) -> Result<()> {
         }
     }
     let (shutdown, mut stop) = watch::channel(false);
+    let signal_shutdown = shutdown.clone();
+    let signal_handle = handle.clone();
     let worker = tokio::spawn(async move {
-        let mut interval = tokio::time::interval(Duration::from_secs(args.sync_seconds));
+        let mut interval = tokio::time::interval(Duration::from_secs(sync_seconds));
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             tokio::select! {
-                _=stop.changed()=>break,
-                _=interval.tick()=>{
-                    let report=state.domain.lock().await.sync(false).await;
-                    match report{Ok(report)=>{if !report.errors.is_empty(){eprintln!("Sync has {} error(s); inspect authenticated /status",report.errors.len());}*state.last_sync.lock().await=Some(report);},Err(e)=>eprintln!("Sync failed: {e}")}
+                _ = stop.changed() => break,
+                _ = interval.tick() => {
+                    match state.domain.lock().await.sync(false).await {
+                        Ok(report) => {
+                            if !report.errors.is_empty() {
+                                eprintln!("Sync has {} error(s); inspect authenticated /status", report.errors.len());
+                            }
+                            *state.last_sync.lock().await = Some(report);
+                        }
+                        Err(e) => eprintln!("Sync failed: {e}"),
+                    }
                 }
             }
         }
     });
-    println!(
-        "Topicairn Trust Domain listening on {}",
-        listener.local_addr()?
-    );
-    println!(
-        "Local admin token file: {}",
-        args.data.join("admin.token").display()
-    );
-    axum::serve(listener, app)
-        .with_graceful_shutdown(async {
+    let served = axum::serve(listener, app)
+        .with_graceful_shutdown(async move {
             let _ = tokio::signal::ctrl_c().await;
+            let _ = signal_shutdown.send(true);
+            if let Some(handle) = signal_handle {
+                handle.graceful_shutdown(Some(Duration::from_secs(10)));
+            }
         })
-        .await?;
+        .await;
     let _ = shutdown.send(true);
+    if let Some(handle) = handle {
+        handle.graceful_shutdown(Some(Duration::from_secs(10)));
+    }
     worker.await?;
+    if let Some(task) = remote_task {
+        task.await??;
+    }
+    served?;
     Ok(())
 }

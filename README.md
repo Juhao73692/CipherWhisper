@@ -2,7 +2,7 @@
 
 **Topic + Cairn**：用独立话题组织消息，用可信节点连接个人可信域。
 
-这是一个带有本机聊天 UI 的 Rust 中心端点 MVP。协议端点是两个 Personal Trust Domain 的**中心计算机**，不是域内设备。一个中心端点拥有一个稳定身份，理解 Topic 和 Markdown，保存明文历史；中转 Relay 只保存公钥、路由元数据和密文。
+这是一个带有本机聊天 UI 和域内设备同步的 Rust MVP。外部加密协议端点是两个 Personal Trust Domain 的**中心计算机**；域内设备使用独立密钥，通过另一套认证 HTTPS 接口连接自己的中心。一个中心拥有稳定身份、Topic 和 Markdown 明文历史；中转 Relay 只保存公钥、路由元数据和密文。
 
 ```text
 Alice Trust Domain center  ── authenticated E2EE ──  Bob Trust Domain center
@@ -10,7 +10,7 @@ Alice Trust Domain center  ── authenticated E2EE ──  Bob Trust Domain ce
                   └────────── offline queue ────────────┘
 ```
 
-内置本机浏览器 UI：联系人 / 话题 / 对话三栏，Markdown、LaTeX 和代码高亮。UI 与管理 API 只允许本机访问；不包含域内设备同步、多设备、群聊或 Federation。
+内置本机浏览器 UI：联系人 / 话题 / 对话三栏，Markdown、LaTeX 和代码高亮。中心与设备客户端共用一个软件和 UI；UI 与管理 API 只允许本机访问，独立设备 HTTPS 端口可远程连接。不包含群聊或 Federation。
 
 ## 已实现
 
@@ -23,12 +23,15 @@ Alice Trust Domain center  ── authenticated E2EE ──  Bob Trust Domain ce
 - 持久化离线队列、游标分页、幂等发送、接收去重、持久化后 ACK、送达状态、指数退避重试。
 - 内置本机 UI：身份卡导出/导入、独立话题、消息回复、原文、预览、草稿、本地搜索、归档、投递状态与重试。
 - 中心端点服务、密文 Relay、管理 CLI；两个中心端点共用一个简单 Relay。
+- 域内设备授权/撤销、独立设备密钥、TLS 1.3、请求/响应签名、分页拉取、独立 ACK 游标、历史和 SENT 同步、持久化客户端队列与操作幂等、话题冲突检测。
 
 ## 单文件 macOS 版本
 
-运行 `./scripts/package-macos.sh` 构建 `dist/topicairn`：Universal arm64 + x86_64，最低 macOS 13，只需要 macOS 系统库。一个可执行文件包含 `relay`、`serve`、`admin`、`tls-init`，无需用户安装 Rust、Node 或反向代理。打包步骤会生成本地 ad-hoc 签名、SHA-256 校验和及附带使用指南的 tar.gz。
+运行 `./scripts/package-macos.sh` 构建 `dist/topicairn`：Universal arm64 + x86_64，最低 macOS 13，只需要 macOS 系统库。一个可执行文件包含 `relay`、`serve`、`device-init`、`connect`、`admin`、`tls-init`，无需用户安装 Rust、Node 或反向代理。打包步骤会生成本地 ad-hoc 签名、SHA-256 校验和及附带使用指南的 tar.gz。
 
 本机 UI 的用法见 [UI 指南](docs/local-ui.md)。在原 `serve` 命令末尾加 `--open` 即可自动打开并解锁。
+
+将客户端加入自己的中心，见 [域内设备同步指南](docs/device-sync.md)：中心开启独立设备 HTTPS 监听，在 UI 授权设备公钥，客户端用 `connect --open` 拉取历史并聊天。
 
 两台电脑的完整操作步骤见 [macOS 测试指南](docs/macos-testing.md)。Relay 可使用内置 HTTPS，`tls-init` 生成测试 CA 和服务器证书；中心端点使用 `--relay-ca ca.pem` 信任该 CA，继续验证证书和主机名。测试 TLS 私钥不会进入 Git。
 
@@ -51,10 +54,13 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo fmt --all -- --check
 python3 scripts/smoke.py
 python3 scripts/smoke.py --binary target/debug/topicairn --tls
+python3 scripts/device-smoke.py
 npm --prefix apps/local-ui run test:browser
 ```
 
 测试需要允许 localhost TCP 监听。`smoke.py` 使用临时数据目录和动态端口，启动 Alice 中心端点、Bob 中心端点、Relay 三个真实进程，验证离线首次发送、双 Topic、ACK、三方重启、回复及网络恢复；结束时停止全部测试进程并删除测试数据。
+
+`device-smoke.py` 额外启动两个独立设备客户端，验证同一软件的五进程链路、既有历史、客户端发送/修改、TLS 校验、断线/重启/去重和撤销。Rust 同步测试覆盖分页事务、响应丢失、晚到收据、双设备冲突、重放和旧历史升级；浏览器测试覆盖 UI 授权配对、设备渲染与失败队列。
 
 ## 运行 Relay
 
@@ -126,9 +132,9 @@ EOF_CONFIG
 | 目录 | 职责 |
 |---|---|
 | `crates/protocol` | 版本、Contact Card、签名 prekeys、HTTP 认证、Envelope、加密 Payload/Event types |
-| `crates/core` | 中心端点的身份、E2EE、密钥保险库、SQLite、Topic、outbox/ACK、Relay client |
+| `crates/core` | 中心身份/E2EE/Relay、密钥保险库、SQLite、同步日志、独立设备副本和操作队列 |
 | `server/relay` | 只处理公钥和 opaque ciphertext 的持久化路由服务 |
-| `server/domain` | 中心端点守护进程、loopback 管理 API、嵌入式 UI 资产 |
+| `server/domain` | 中心/客户端模式、loopback 管理 API/UI、独立设备 HTTPS 接口 |
 | `apps/local-ui` | Svelte 本机 UI、安全 Markdown/LaTeX/代码渲染与浏览器测试 |
 | `apps/cli` | 中心端点的无界面管理工具 |
 | `apps/topicairn` | 统一单文件入口和测试 TLS 证书生成 |

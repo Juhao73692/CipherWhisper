@@ -1251,3 +1251,64 @@ kbd {
   text-align: center;
   letter-spacing: 0;
 }
+
+.devices-trigger {
+  background: #2c3a3f;
+  color: #b0c1bd;
+  text-align: left;
+  border-radius: 6px;
+  padding: 10px;
+  margin-bottom: 14px;
+  font-size: 11px;
+}
+.device-section-title {
+  font-size: 13px;
+  font-weight: 550;
+  margin: 28px 0 12px;
+}
+.device-records {
+  max-height: 330px;
+  overflow: auto;
+}
+.device-records article {
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 14px;
+  margin-bottom: 10px;
+  background: #f5f6ef;
+}
+.device-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 12px;
+}
+.device-row small {
+  color: #8b987e;
+  font-size: 10px;
+}
+.device-records code {
+  display: block;
+  overflow-wrap: anywhere;
+  font-size: 10px;
+  margin: 10px 0;
+  color: #819071;
+}
+.device-records p {
+  font-size: 11px;
+  line-height: 1.7;
+  color: #899480;
+}
+.device-records pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 11px;
+  line-height: 1.8;
+  max-height: 160px;
+  overflow: auto;
+}
+.device-records button {
+  font-size: 10px;
+  padding: 7px 11px;
+  margin-top: 10px;
+}

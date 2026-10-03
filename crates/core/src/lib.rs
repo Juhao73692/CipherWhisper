@@ -1,4 +1,6 @@
-//! Single-computer Personal Trust Domain endpoint. No device sync or rendering.
+//! Trust Domain center and separately keyed internal device replicas.
+pub mod device;
+pub mod domain_sync;
 mod storage;
 pub mod transport;
 mod vault;
@@ -191,6 +193,14 @@ impl Endpoint {
         );
         let transport = RelayClient::with_ca(relay, relay_ca)?;
         let (mut db, lock) = storage::open(dir.as_ref())?;
+        ensure!(
+            !db.query_row(
+                "SELECT EXISTS(SELECT 1 FROM metadata WHERE key='local-role' AND value='device')",
+                [],
+                |r| r.get::<_, bool>(0)
+            )?,
+            "device replica cannot be opened as a Trust Domain center"
+        );
         let existing: Option<String> = db
             .query_row("SELECT value FROM metadata WHERE key='salt'", [], |r| {
                 r.get(0)
@@ -254,6 +264,8 @@ impl Endpoint {
                 "stored identity metadata mismatch"
             );
         }
+        set_metadata(&db, "local-role", "center")?;
+        domain_sync::initialize(&mut db)?;
         Ok(Self {
             db,
             key,
@@ -515,6 +527,14 @@ impl Endpoint {
     }
     /// Atomic ratchet advance + immutable outgoing ciphertext + local plaintext.
     pub fn queue_event(&mut self, peer: &str, event: Event) -> Result<Envelope> {
+        self.queue_event_transaction(peer, event, |_, _| Ok(()))
+    }
+    fn queue_event_transaction(
+        &mut self,
+        peer: &str,
+        event: Event,
+        finalize: impl FnOnce(&Transaction<'_>, &Payload) -> Result<()>,
+    ) -> Result<Envelope> {
         event.validate()?;
         self.peer(peer)?;
         let card = self.contact_card()?;
@@ -557,6 +577,7 @@ impl Endpoint {
             "INSERT INTO outbox(id,envelope,message_id) VALUES(?,?,?)",
             params![env.id, serde_json::to_string(&env)?, message_id],
         )?;
+        finalize(&tx, &payload)?;
         tx.commit()?;
         Ok(env)
     }
@@ -680,9 +701,12 @@ impl Endpoint {
     /// Retries reuse committed ciphertext. ACK occurs only after durable local commit.
     pub async fn sync(&mut self, force: bool) -> Result<SyncReport> {
         let mut report = SyncReport::default();
-        if let Err(e) = self.publish().await {
+        let published = if let Err(e) = self.publish().await {
             report.errors.push(format!("prekeys: {e}"));
-        }
+            false
+        } else {
+            true
+        };
         let jobs = self.outbox()?;
         for job in jobs
             .into_iter()
@@ -715,8 +739,14 @@ impl Endpoint {
                     let delay = 2_i64.pow((job.attempts + 1).min(8) as u32);
                     self.db.execute("UPDATE outbox SET accepted=0,attempts=attempts+1,next_attempt=?,last_error=? WHERE id=?",params![now()+delay,e.to_string(),job.id])?;
                     report.errors.push(format!("outbox {}: {e}", job.id));
+                    break;
                 }
             }
+        }
+        // Still record one delivery attempt during outages, then release the
+        // center so its devices can continue using the local durable queue.
+        if !published {
+            return Ok(report);
         }
         // Walk all pages each pass. Failed/unknown messages remain unacked without blocking later pages.
         let mut cursor = 0;

@@ -1,6 +1,6 @@
 # Topicairn protocol v1
 
-Transport-independent conversation events are encrypted between **Trust Domain center endpoints**. Local devices are outside this protocol. Wire format is UTF-8 JSON; time values are Unix seconds. IDs are UUID strings except user IDs, which are Ed25519 fingerprints.
+Transport-independent conversation events are encrypted between **Trust Domain center endpoints**. Local devices use the separate internal protocol below; they never appear in external routing or prekeys. Wire format is UTF-8 JSON; time values are Unix seconds. IDs are UUID strings except user/device IDs, which are Ed25519 fingerprints.
 
 ## Public identity
 
@@ -143,3 +143,44 @@ Local delivery states:
 Delivery states are based on Relay reports, not cryptographic end-to-end receipts. An honest Relay reports delivered after a recipient ACK; a malicious Relay can lie. Delivery is not a human read receipt. Sender keeps outbox ciphertext until recipient ACK, enabling resubmit if Relay loses its database. Backoff after error is 2, 4, 8, …, 256 seconds; accepted-envelope status is polled at 5-second intervals. An explicit CLI/API sync can force immediate retry.
 
 Each sync starts cursor 0, walks at most 100 pages of 100 unacknowledged messages, and ACKs only committed items. Unknown/tampered messages remain unacknowledged and reported, while later valid items can still be processed. Relay inbox cursors are durable monotonic row sequences, not client-managed ordering semantics.
+
+## Internal device protocol v1
+
+This protocol belongs to Local Trust Layer, on a dedicated **TLS 1.3 only** listener. Center keypairs/ratchets are not distributed. Types and exact serialization order are in `crates/protocol/src/device.rs`; JSON signatures use serde_json compact serialization without a trailing newline, including ordered nested struct fields. Do not independently reorder JSON objects when reconstructing signing bytes.
+
+DeviceCard is `{version,id,label,signing_key,signature}` with `id = "dev_" + SHA256_HEX(decoded Ed25519 key)` and self-signature over:
+
+```text
+["topicairn.device.card.v1",version,id,label,signing_key]
+```
+
+The center administrator explicitly enrolls a DeviceCard; self-signatures alone confer no permission. Center-signed Pairing is `{version,device,domain,server,ca_pem,epoch,signature}`. `domain` is its ContactCard, `server` an HTTPS origin, and `epoch` its journal UUID. Sign:
+
+```text
+["topicairn.device.pair.v1",version,device,domain,server,ca_pem,epoch]
+```
+
+The client verifies the complete center user_id through a trusted channel, exact own DeviceCard, both signatures, HTTPS origin and pinned CA. Same-center configuration changes preserve the cursor only with unchanged keys and epoch. Pairing has no private keys.
+
+Requests require `x-device-key`, `x-device-domain`, `x-device-time`, `x-device-nonce`, `x-device-signature`. Device signs:
+
+```text
+["topicairn.device.http.v1",domain_id,UPPERCASE_METHOD,
+ PATH_WITH_EXACT_QUERY,SHA256_HEX(EXACT_BODY_BYTES),timestamp,nonce]
+```
+
+The center checks enrolled/non-revoked public key, domain, ±300-second time, exact request bytes and durable unused nonce. Retries use fresh request nonces and the **same command**. Requests with Origin are refused; no browser/CORS API is exposed.
+
+Successful responses are `{version,domain_id,device_id,nonce,data,signature}`, signed by the stable center identity over:
+
+```text
+["topicairn.device.response.v1",version,domain_id,device_id,nonce,data]
+```
+
+The client verifies the signature and exact request nonce/domain/device before using `data`. Unsigned error responses cannot authorize state changes or permanently reject commands; they leave the operation queued for retry.
+
+Pull returns `{epoch,from_cursor,next_cursor,high_water,changes:[{seq,entity}]}`. Entities are `{kind:"peer"|"topic"|"message",data:...}`; Topic/Message retain camelCase shapes from the local API. Changes are immutable snapshots committed with center data in the same SQLite transaction, ordered by monotonic sequence. Pagination bounds count and encoded bytes. Client data and cursor commit atomically; ACK `{epoch,cursor}` follows. ACK does not delete shared history. Initial cursor is 0, each device maintains independent progress, and observed journal rollback fails closed.
+
+Commands are `{id:<fixed UUID>,operation}`. Operations have a `type`: `add_peer`, `create_topic`, `update_topic`, `send`. Send fixes `message_id`, `topic_id`, Markdown `body`, optional `reply_to` and local queue timestamp. Center assigns final message timestamp. Topic modification includes `base_title`/`base_archived` for conflict checking. Only the center encrypts into the external peer session.
+
+CommandReply is `{id,body_digest,result}`; digest hashes compact command JSON. Result is `{status:"accepted",entity,revision}` or `{status:"rejected",error,current:<Change|null>}`. Center persists results atomically with messages/ratchets/outbox. Same device+command ID+body returns the prior receipt; changing content under the ID is forbidden. Applying a receipt must not advance the page cursor; per-entity revision prevents late receipts overwriting newer pages. Permanently rejected text is retained locally until explicitly discarded. Operation receipts and sync logs are not garbage collected in v1.

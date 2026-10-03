@@ -22,7 +22,7 @@ export type Message = {
   body: string;
   format: 'markdown';
   replyTo?: string | null;
-  delivery: 'queued' | 'sent' | 'delivered' | 'received';
+  delivery: 'queued' | 'sent' | 'delivered' | 'received' | 'failed';
 };
 export type Report = {
   sent: number;
@@ -31,7 +31,49 @@ export type Report = {
   delivered: number;
   errors: string[];
 };
-export type Status = { protocol: number; lastSync: Report | null };
+export type DeviceCard = {
+  version: number;
+  id: string;
+  label: string;
+  signing_key: string;
+  signature: string;
+};
+export type DeviceStatus = {
+  card: DeviceCard;
+  revoked: boolean;
+  createdAt: number;
+  lastSeen: number;
+  acknowledgedCursor: number;
+};
+export type DeviceInfo = {
+  card: DeviceCard;
+  domainId: string;
+  server: string;
+  cursor: number;
+  acknowledgedCursor: number;
+};
+export type Pending = {
+  id: string;
+  state: string;
+  error: string | null;
+  operation: { type: string; body?: string; title?: string; card?: Card };
+};
+export type Pairing = {
+  version: number;
+  device: DeviceCard;
+  domain: Card;
+  server: string;
+  ca_pem: string;
+  epoch: string;
+  signature: string;
+};
+export type Status = {
+  protocol: number;
+  lastSync: Report | null;
+  mode?: 'server' | 'client';
+  device?: DeviceInfo | null;
+  deviceServer?: string | null;
+};
 export type Outbox = {
   id: string;
   accepted: boolean;

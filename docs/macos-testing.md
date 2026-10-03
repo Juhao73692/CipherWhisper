@@ -2,6 +2,8 @@
 
 `topicairn` 是一个 Universal macOS 命令行可执行文件，包含 Apple Silicon arm64 和 Intel x86_64 两个架构，最低 macOS 13。运行时不需要安装 Rust、Node、Homebrew、SQLite、Caddy 或 OpenSSL；它只链接 macOS 系统库。
 
+这份指南测试两个用户的中心端点。若两台 Mac 分别作为同一个可信域的中心和客户端，使用同一个程序的 `serve` / `connect` 模式，按 [域内设备同步指南](device-sync.md) 操作；压缩包内也附带 `DEVICES.zh-CN.md`。
+
 ```text
 电脑 A：Alice 中心端点 + HTTPS 密文 Relay
 电脑 B：Bob 中心端点

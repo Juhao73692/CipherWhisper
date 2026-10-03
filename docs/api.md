@@ -18,9 +18,9 @@ Error JSON is `{error:"..."}`. Unauthorized/expired/replayed signatures: 401. Un
 
 Relay has no Topic, search, Markdown, rendering, reply or attachment APIs. Database has ciphertext queue rows, signed public prekeys, consumed one-time-key records and used request nonces.
 
-## Center's loopback management API
+## Shared center/client loopback management API
 
-This is Local Trust Layer administration, **not** the external peer protocol and **not** domain-internal device networking. The binary refuses non-loopback binds. Every management route requires `Authorization: Bearer <64-character admin.token or browser-session token>`; there is no unauthenticated status/identity route. Token is generated locally, retained across restart and never logged.
+This is local administration, separate from both external peer and internal device transport. The binary refuses non-loopback binds. `serve` operates the center; `connect` operates a separately keyed replica using the same API/UI. Every management route requires `Authorization: Bearer <64-character admin.token or browser-session token>`; there is no unauthenticated status/identity route. Token is generated locally, retained across restart and never logged.
 
 | Method/path | JSON/query | Result |
 |---|---|---|
@@ -35,7 +35,12 @@ This is Local Trust Layer administration, **not** the external peer protocol and
 | `GET /search?q=<phrase>` | literal phrase, URL encoded | Matching Message[]; max 100; local SQLite FTS5 trigram substrings; one/two-character terms use bound literal scanning |
 | `POST /sync` | ignored body, e.g. `{}` | `{sent,received,acknowledged,delivered,errors}` |
 | `GET /outbox` | none | `[{id,accepted,attempts,nextAttempt,lastError}]`, excludes ciphertext |
-| `GET /status` | none | `{protocol,lastSync}`; background sync report |
+| `GET /status` | none | `{protocol,mode,device,deviceServer,lastSync}`; server/client mode; client device includes card/domainId/server/cursor/acknowledgedCursor |
+| `GET /devices` | none | `{enabled,devices:[DeviceStatus]}`; center enrollments and revoked records; client returns disabled/empty |
+| `POST /devices` | DeviceCard | Center only: verify/enroll, returns signed Pairing |
+| `POST /devices/{id}/revoke` | `{}` | Center only: permanent revocation |
+| `GET /device-pending` | none | Client: `[{id,operation,state,error}]`; center empty |
+| `POST /device-pending/{id}/discard` | `{}` | Client only: discard explicitly rejected operation and local failed body; pending/uncertain operations forbidden |
 
 Request types use snake_case to match Rust protocol. Returned Topic/Message/outbox objects use camelCase; ContactCard uses snake_case consistently with signed identity wire format.
 
@@ -57,7 +62,21 @@ Public UI routes: `GET /` / `GET /index.html` and embedded `/assets/*`; they con
 
 All routes check exact local Host and same Origin when supplied, reject cross-site Sec-Fetch-Site, emit no CORS permissions, and set restrictive CSP / no-store / frame protections. Wrong host/origin: 403. UI rendering and operation details: [local-ui.md](local-ui.md).
 
-Management API authentication failures are 401. Application validation failures are 400 with `{error}`. A successful `/sync` request can include per-job errors; jobs remain durable for retries. Background synchronization is serialized with management mutations through one endpoint mutex to avoid concurrent ratchet advances.
+Management API authentication failures are 401. Application validation failures are 400 with `{error}`. A successful `/sync` request can include per-job errors; jobs remain durable for retries or explicit review after rejection. Background synchronization is serialized with mutations through one workspace mutex to avoid concurrent ratchet advances or cursor commits.
+
+Client sends persist an operation immediately and return a queued Message; accepted center results arrive via sync. Metadata operations wait for center acceptance; on uncertain network outcome they remain durable despite the local API returning an error. Do not resubmit. Rejected operations are retained for review; failed local messages use delivery `failed`. On clients `/identity` returns the center's public identity, `/outbox` describes device operations, and no center private keys or peer sessions are held locally.
+
+## Center's independent HTTPS device API
+
+Enabled only with all `--device-*` options. TLS 1.3 only; device-signed native requests required on every route. Public HTTPS origin/CA are bound in a center-signed Pairing; there is no unauthenticated enrollment route. This listener exposes no local UI or administrator operations. Authentication/revocation/replay failures are 401, application validation errors 400. Successful bodies are nonce-bound center-signed `SignedResponse<T>` described in [protocol.md](protocol.md).
+
+| Method/path | Body/query | Signed data |
+|---|---|---|
+| `GET /device/v1/changes?epoch=<uuid>&cursor=<n>&limit=100` | Empty body; count 1..100; pages also bound encoded bytes | Page with immutable versioned peer/topic/message snapshots |
+| `POST /device/v1/ack` | `{epoch,cursor}` | Ack; cannot exceed served cursor; per-device, no shared-history deletion |
+| `POST /device/v1/commands` | `{id,operation}` | CommandReply; durable accepted/rejected receipt, exact command retry idempotent |
+
+Enrolled devices have full history and conversation write access, with no right to manage enrollment. Data is JSON inside authenticated TLS; it is never plaintext on the network. This is domain-owned history, separate from the opaque external Relay payload. TLS endpoints are center/device; the Relay never sees this traffic. Operational guide: [device-sync.md](device-sync.md).
 
 ## Deployment
 
@@ -73,4 +92,4 @@ relay.example.com {
 }
 ```
 
-Centers use `--relay https://relay.example.com`. They never change identity because that address changes. Ports 8790/8791 above are local administration examples and are not exposed. Separate home Relays/Federation and device access need future implementations; do not infer those capabilities from the sample proxy.
+Centers use `--relay https://relay.example.com`. They never change identity because that address changes. Ports 8790/8791 are local administration examples and are not exposed. Device access uses the separate authenticated TLS listener, e.g. 8792. Separate home Relays/Federation remain future work; the sample proxy does not expose the local management UI.

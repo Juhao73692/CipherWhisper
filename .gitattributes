@@ -1,0 +1,2 @@
+# Bundled assets are generated and include significant whitespace inside JS strings.
+server/domain/ui/assets/* -whitespace linguist-generated

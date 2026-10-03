@@ -2,7 +2,17 @@
   import { onMount, tick } from 'svelte';
   import Markdown from './Markdown.svelte';
   import { api, setToken } from './api';
-  import type { Card, Topic, Message, Status, Outbox, Report } from './types';
+  import type {
+    Card,
+    Topic,
+    Message,
+    Status,
+    Outbox,
+    Report,
+    DeviceStatus,
+    Pending,
+    Pairing,
+  } from './types';
   let unlocked = $state(false),
     busy = $state(false),
     sending = $state(false),
@@ -23,9 +33,9 @@
   let status = $state<Status | null>(null),
     outbox = $state<Outbox[]>([]),
     connectionError = $state('');
-  let modal = $state<'peer' | 'topic' | 'rename' | 'identity' | 'peerIdentity' | 'search' | null>(
-    null,
-  );
+  let modal = $state<
+    'peer' | 'topic' | 'rename' | 'identity' | 'peerIdentity' | 'search' | 'devices' | null
+  >(null);
   let cardText = $state(''),
     topicTitle = $state(''),
     query = $state(''),
@@ -33,6 +43,11 @@
   let searchBusy = $state(false),
     includeArchived = $state(false),
     sourceIds = $state<Set<string>>(new Set());
+  let deviceRecords = $state<DeviceStatus[]>([]),
+    deviceEnabled = $state(false),
+    deviceText = $state(''),
+    pendingOps = $state<Pending[]>([]);
+  let clientMode = $derived(status?.mode === 'client');
   let pane = $state<'peers' | 'topics' | 'conversation'>('peers');
   let historyElement = $state<HTMLDivElement>(),
     editor = $state<HTMLTextAreaElement>();
@@ -89,6 +104,7 @@
     sent: '已到 Relay',
     delivered: '对方已接收',
     received: '已接收',
+    failed: '中心拒绝',
   };
   const date = (n: number) =>
     new Date(n * 1000).toLocaleString('zh-CN', {
@@ -121,6 +137,10 @@
     modal = null;
     notice = '';
     connectionError = '';
+    deviceRecords = [];
+    deviceEnabled = false;
+    deviceText = '';
+    pendingOps = [];
   }
   async function unlock(token: string) {
     if (busy) return;
@@ -158,6 +178,7 @@
       topics = t;
       status = s;
       outbox = o;
+      if (modal === 'devices') await loadDevices();
       connectionError = '';
       if (!peerId && p.length) {
         peerId = p[0].user_id;
@@ -252,7 +273,7 @@
     try {
       const r = await api<Report>('/sync', {});
       if (unlocked) {
-        status = { protocol: 1, lastSync: r };
+        status = { ...status, protocol: 1, lastSync: r };
         notice = r.errors.length ? '部分任务仍在队列中重试' : '同步完成';
         await refresh();
       }
@@ -269,6 +290,10 @@
     if (value === 'peer') cardText = '';
     if (value === 'topic') topicTitle = '';
     if (value === 'rename') topicTitle = activeTopic?.title || '';
+    if (value === 'devices') {
+      deviceText = '';
+      void loadDevices();
+    }
   }
   async function importPeer() {
     if (busy) return;
@@ -354,6 +379,87 @@
     else next.add(id);
     sourceIds = next;
   }
+
+  async function loadDevices() {
+    try {
+      if (clientMode) {
+        pendingOps = await api<Pending[]>('/device-pending');
+      } else {
+        const result = await api<{ enabled: boolean; devices: DeviceStatus[] }>('/devices');
+        deviceEnabled = result.enabled;
+        deviceRecords = result.devices;
+      }
+    } catch (e) {
+      fail(e);
+    }
+  }
+  function exportJSON(value: unknown, name: string) {
+    const url = URL.createObjectURL(
+      new Blob([JSON.stringify(value, null, 2) + '\n'], { type: 'application/json' }),
+    );
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = name;
+    link.click();
+    URL.revokeObjectURL(url);
+  }
+  async function enrollDevice() {
+    if (busy) return;
+    busy = true;
+    error = '';
+    try {
+      const pairing = await api<Pairing>('/devices', JSON.parse(deviceText));
+      if (unlocked) {
+        exportJSON(pairing, `${pairing.device.id}.pair.json`);
+        deviceText = '';
+        notice = '设备已授权，配对文件已下载。请核对中心身份指纹，再在客户端导入。';
+        await loadDevices();
+      }
+    } catch (e) {
+      fail(e);
+    } finally {
+      busy = false;
+    }
+  }
+  async function readDevice(event: Event) {
+    const file = (event.target as HTMLInputElement).files?.[0];
+    if (!file) return;
+    if (file.size > 16384) {
+      error = '设备身份卡文件过大';
+      return;
+    }
+    deviceText = await file.text();
+  }
+  async function revokeDevice(id: string) {
+    if (busy) return;
+    busy = true;
+    error = '';
+    try {
+      await api(`/devices/${encodeURIComponent(id)}/revoke`, {});
+      await loadDevices();
+      notice = '设备已撤销，将不再获得新数据；已有本地副本无法远程删除。';
+    } catch (e) {
+      fail(e);
+    } finally {
+      busy = false;
+    }
+  }
+  async function discardOperation(id: string) {
+    if (busy) return;
+    busy = true;
+    error = '';
+    try {
+      await api(`/device-pending/${encodeURIComponent(id)}/discard`, {});
+      await loadDevices();
+      await refresh();
+      notice = '已删除失败请求。';
+    } catch (e) {
+      fail(e);
+    } finally {
+      busy = false;
+    }
+  }
+
   function downloadCard() {
     if (!self) return;
     const url = URL.createObjectURL(
@@ -427,7 +533,11 @@
     <section class="unlock-card">
       <span class="eyebrow accent">LOCAL WORKSPACE</span>
       <h1>让对话，<br />有自己的话题。</h1>
-      <p>连接你的本机可信域中心。联系人、话题和消息历史都由这台计算机管理。</p>
+      <p>
+        连接你的{clientMode
+          ? '本设备历史副本'
+          : '本机可信域中心'}。使用本机工作区查看联系人、话题和消息历史。
+      </p>
       <form
         onsubmit={(e) => {
           e.preventDefault();
@@ -502,9 +612,14 @@
             >
           </div>{/if}
       </div>
+      <button class="devices-trigger" onclick={() => openModal('devices')}
+        >{clientMode ? '◇ 设备同步与队列' : '◇ 域内设备管理'}</button
+      >
       <div class="domain-note">
-        <span class="small-dot"></span>本机可信域中心
-        <p>外部传输端到端加密<br />本机保存解密后的消息</p>
+        <span class="small-dot"></span>{clientMode ? '本设备历史副本' : '本机可信域中心'}
+        <p>
+          {clientMode ? '与中心通过加密连接同步' : '外部传输端到端加密'}<br />本机保存解密后的消息
+        </p>
       </div>
       <button class="self-card" onclick={() => openModal('identity')}
         ><span class="avatar self">{(self?.label || '我').slice(0, 1)}</span><span
@@ -712,7 +827,9 @@
                 >
               </div>
             </div>{/if}
-          <p class="composer-note">◇ 仅两个可信域中心之间加密 · 搜索与渲染只在本机进行</p>
+          <p class="composer-note">
+            ◇ {clientMode ? '设备连接加密 · 历史从中心同步' : '可信域中心之间端到端加密'} · 本机搜索与渲染
+          </p>
         </div>
       {:else}
         <div class="workspace-empty">
@@ -766,6 +883,7 @@
               identity: '我的可信域身份',
               peerIdentity: '联系人身份',
               search: '搜索本机消息',
+              devices: clientMode ? '设备同步' : '域内设备管理',
             }[modal]}
           </h2>
         </div>
@@ -841,6 +959,111 @@
               onclick={copyCard}>复制 JSON</button
             ><button class="secondary" onclick={lock}>锁定界面</button>
           </div>{/if}
+      {:else if modal === 'devices'}
+        {#if clientMode && status?.device}
+          <p>
+            消息从你的中心服务器拉取，设备拥有独立密钥。本机可离线阅读历史和排队发送；联系人和话题操作需中心确认。
+          </p>
+          <div class="identity-detail">
+            <span class="eyebrow">{status.device.card.label}</span>
+            <div class="detail-label">本设备身份</div>
+            <code>{status.device.card.id}</code>
+            <div class="detail-label">中心身份</div>
+            <code>{status.device.domainId}</code>
+            <div class="detail-label">加密连接</div>
+            <code>{status.device.server}</code>
+            <div class="detail-label">本机游标 / 已确认游标</div>
+            <code>{status.device.cursor} / {status.device.acknowledgedCursor}</code>
+          </div>
+          <button
+            class="secondary"
+            onclick={() =>
+              exportJSON(status!.device!.card, `${status!.device!.card.id}.device.json`)}
+            >导出设备身份卡</button
+          >
+          <h3 class="device-section-title">待处理请求 · {pendingOps.length}</h3>
+          <p class="hint">
+            网络中断的请求会保留并重试。只能删除中心明确拒绝的请求；删除失败消息时会同时删除它的本机正文。
+          </p>
+          <div class="device-records">
+            {#each pendingOps as op (op.id)}<article>
+                <div class="device-row">
+                  <strong
+                    >{{
+                      send: '发送消息',
+                      create_topic: '创建话题',
+                      update_topic: '修改话题',
+                      add_peer: '添加联系人',
+                    }[op.operation.type] || op.operation.type}</strong
+                  ><small>{op.state === 'failed' ? '已拒绝' : '等待同步'}</small>
+                </div>
+                <code>{op.id}</code>{#if op.operation.body}<pre>{op.operation.body}</pre>{:else}<p>
+                    {op.operation.title || op.operation.card?.label || ''}
+                  </p>{/if}{#if op.error}<p class="sync-error">
+                    {op.error}
+                  </p>{/if}{#if op.state === 'failed'}<button
+                    class="secondary"
+                    disabled={busy}
+                    onclick={() => discardOperation(op.id)}>删除失败记录</button
+                  >{/if}
+              </article>{/each}
+          </div>
+        {:else}
+          <p>
+            授权你的设备连接本可信域。每个设备持有自己的密钥，通过 HTTPS
+            拉取历史；外部联系人仍只看到你的中心身份。
+          </p>
+          {#if deviceEnabled}
+            <label class="file-picker"
+              >选择客户端导出的 .device.json<input
+                type="file"
+                accept=".json,application/json"
+                onchange={readDevice}
+              /></label
+            >
+            <form
+              onsubmit={(e) => {
+                e.preventDefault();
+                void enrollDevice();
+              }}
+            >
+              <label for="device-card">设备公开身份卡 JSON</label><textarea
+                id="device-card"
+                bind:value={deviceText}
+                required
+                spellcheck="false"
+                placeholder="粘贴设备身份卡，先核对完整 dev_ 指纹"></textarea><button
+                class="primary full"
+                disabled={busy || !deviceText.trim()}
+                >{busy ? '授权中…' : '授权设备并下载配对文件'}</button
+              >
+            </form>
+          {:else}<div class="notice">
+              设备监听尚未开启。请用 --device-bind、设备 TLS 证书及 --device-url
+              配置重启中心；本机管理界面仍只监听 loopback。
+            </div>{/if}
+          <h3 class="device-section-title">已授权设备 · {deviceRecords.length}</h3>
+          <div class="device-records">
+            {#each deviceRecords as device (device.card.id)}<article>
+                <div class="device-row">
+                  <strong>{device.card.label}</strong><small
+                    >{device.revoked ? '已撤销' : '已授权'}</small
+                  >
+                </div>
+                <code>{device.card.id}</code>
+                <p>
+                  已确认游标 {device.acknowledgedCursor} · {device.lastSeen
+                    ? `最近连接 ${date(device.lastSeen)}`
+                    : '尚未连接'}
+                </p>
+                {#if !device.revoked}<button
+                    class="secondary"
+                    disabled={busy}
+                    onclick={() => revokeDevice(device.card.id)}>撤销设备</button
+                  >{/if}
+              </article>{/each}
+          </div>
+        {/if}
       {:else if modal === 'search'}
         <p>只检索这台计算机的 SQLite 历史。搜索词不会发送到 Relay。</p>
         <form

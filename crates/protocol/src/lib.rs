@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::time::{SystemTime, UNIX_EPOCH};
 use vodozemac::{Curve25519PublicKey, Ed25519PublicKey, Ed25519Signature};
+pub mod device;
 
 pub const VERSION: u32 = 1;
 pub const MAX_BODY: usize = 64 * 1024;

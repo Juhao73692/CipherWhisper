@@ -9,6 +9,8 @@
 !.env.example
 admin.token
 /domain-data/
+/device-data/
+/device-tls/
 __pycache__/
 *.pyc
 .DS_Store

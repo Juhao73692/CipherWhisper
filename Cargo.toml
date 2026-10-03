@@ -27,6 +27,7 @@ topicairn-domain = { path = "server/domain" }
 topicairn-cli = { path = "apps/cli" }
 axum-server = { version = "0.8", features = ["tls-rustls"] }
 rcgen = "0.14.10"
+rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "std"] }
 
 [profile.release]
 lto = "thin"

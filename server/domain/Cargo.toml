@@ -16,3 +16,5 @@ subtle = "2"
 zeroize = "1"
 getrandom = "0.4"
 hex.workspace = true
+axum-server.workspace = true
+rustls.workspace = true
