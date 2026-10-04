@@ -1,9 +1,9 @@
 use anyhow::Result;
+use cipherwhisper_core::{Endpoint, device::Replica};
+use cipherwhisper_protocol::device::*;
+use cipherwhisper_protocol::*;
 use rusqlite::Connection;
 use tempfile::TempDir;
-use topicairn_core::{Endpoint, device::Replica};
-use topicairn_protocol::device::*;
-use topicairn_protocol::*;
 use uuid::Uuid;
 const PASS: &str = "device-sync-test-passphrase";
 const RELAY: &str = "http://127.0.0.1:8787";

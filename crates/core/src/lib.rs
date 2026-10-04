@@ -7,10 +7,10 @@ pub mod transport;
 mod vault;
 use anyhow::{Result, ensure};
 use argon2::{Algorithm, Argon2, Params, Version};
+use cipherwhisper_protocol::*;
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde::{Deserialize, Serialize};
 use std::{fs::File, path::Path};
-use topicairn_protocol::*;
 use transport::RelayClient;
 use uuid::Uuid;
 use vodozemac::{
@@ -18,6 +18,17 @@ use vodozemac::{
     olm::{Account, OlmMessage, Session, SessionConfig},
 };
 use zeroize::Zeroizing;
+
+/// Preserve existing launch scripts while preferring the current product name.
+pub fn passphrase_env() -> &'static str {
+    if std::env::var_os("CIPHERWHISPER_PASSPHRASE").is_none()
+        && std::env::var_os("TOPICAIRN_PASSPHRASE").is_some()
+    {
+        "TOPICAIRN_PASSPHRASE"
+    } else {
+        "CIPHERWHISPER_PASSPHRASE"
+    }
+}
 
 pub struct Endpoint {
     db: Connection,

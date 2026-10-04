@@ -1,5 +1,5 @@
 [package]
-name = "topicairn"
+name = "cipherwhisper"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,10 +8,10 @@ anyhow.workspace = true
 clap.workspace = true
 tokio.workspace = true
 serde_json.workspace = true
-topicairn-cli.workspace = true
-topicairn-domain.workspace = true
-topicairn-relay.workspace = true
-topicairn-protocol.workspace = true
+cipherwhisper-cli.workspace = true
+cipherwhisper-domain.workspace = true
+cipherwhisper-relay.workspace = true
+cipherwhisper-protocol.workspace = true
 rcgen.workspace = true
 zeroize = "1"
 time = "0.3"

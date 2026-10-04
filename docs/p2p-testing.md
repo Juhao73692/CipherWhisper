@@ -5,7 +5,7 @@
 ## 一条命令打开两个测试实例
 
 ```sh
-./topicairn local-test --open
+./cipherwhisper local-test --open
 ```
 
 程序自动创建临时 Alice、Bob 身份，启动两个独立 `serve` 子进程，互相导入签名连接卡并验证双向连接，然后打开本机 UI：
@@ -20,7 +20,7 @@
 端口被占用时可以换端口：
 
 ```sh
-./topicairn local-test --open --alice-port 8890 --bob-port 8891 \
+./cipherwhisper local-test --open --alice-port 8890 --bob-port 8891 \
   --alice-peer-port 8900 --bob-peer-port 8901
 ```
 
@@ -31,18 +31,18 @@
 终端 A（zsh）：
 
 ```sh
-read -rs 'TOPICAIRN_PASSPHRASE?Alice 口令（至少 12 bytes）: '; echo
-export TOPICAIRN_PASSPHRASE
-./topicairn serve --data alice --name Alice \
+read -rs 'CIPHERWHISPER_PASSPHRASE?Alice 口令（至少 12 bytes）: '; echo
+export CIPHERWHISPER_PASSPHRASE
+./cipherwhisper serve --data alice --name Alice \
   --bind 127.0.0.1:8790 --peer-bind 127.0.0.1:8800 --sync-seconds 1 --open
 ```
 
 终端 B：
 
 ```sh
-read -rs 'TOPICAIRN_PASSPHRASE?Bob 口令（至少 12 bytes）: '; echo
-export TOPICAIRN_PASSPHRASE
-./topicairn serve --data bob --name Bob \
+read -rs 'CIPHERWHISPER_PASSPHRASE?Bob 口令（至少 12 bytes）: '; echo
+export CIPHERWHISPER_PASSPHRASE
+./cipherwhisper serve --data bob --name Bob \
   --bind 127.0.0.1:8791 --peer-bind 127.0.0.1:8801 --sync-seconds 1 --open
 ```
 
@@ -60,8 +60,8 @@ export TOPICAIRN_PASSPHRASE
 例如 Alice 地址 `192.168.1.10`：
 
 ```sh
-./topicairn tls-init --host 192.168.1.10 --out peer-tls
-./topicairn serve --data alice --name Alice --open \
+./cipherwhisper tls-init --host 192.168.1.10 --out peer-tls
+./cipherwhisper serve --data alice --name Alice --open \
   --peer-bind 0.0.0.0:8800 --peer-url https://192.168.1.10:8800 \
   --peer-tls-cert peer-tls/server.pem --peer-tls-key peer-tls/server-key.pem \
   --peer-ca peer-tls/ca.pem

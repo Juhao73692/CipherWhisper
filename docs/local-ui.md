@@ -1,15 +1,15 @@
 # 本机 UI 与消息渲染
 
-本机 UI 与管理 API 一起嵌入 `topicairn`，在浏览器中运行，只允许 loopback 监听。`serve` 从中心读取历史；`connect` 从本机设备副本读取历史，由 Rust 后台使用独立设备密钥和认证 TLS 1.3 从中心拉取。两个中心默认直接 P2P，继续使用 Olm 3DH / Double Ratchet 端到端加密。浏览器无需直接访问任何远程服务。
+本机 UI 与管理 API 一起嵌入 `cipherwhisper`，在浏览器中运行，只允许 loopback 监听。`serve` 从中心读取历史；`connect` 从本机设备副本读取历史，由 Rust 后台使用独立设备密钥和认证 TLS 1.3 从中心拉取。两个中心默认直接 P2P，继续使用 Olm 3DH / Double Ratchet 端到端加密。浏览器无需直接访问任何远程服务。
 
 ## 开始使用
 
-本机一条命令开启两个已互加的测试实例：`./topicairn local-test --open`。永久实例可分别启动：
+本机一条命令开启两个已互加的测试实例：`./cipherwhisper local-test --open`。永久实例可分别启动：
 
 ```sh
-read -rs 'TOPICAIRN_PASSPHRASE?本机可信域口令（至少 12 bytes）: '; echo
-export TOPICAIRN_PASSPHRASE
-./topicairn serve --data alice --name Alice \
+read -rs 'CIPHERWHISPER_PASSPHRASE?本机可信域口令（至少 12 bytes）: '; echo
+export CIPHERWHISPER_PASSPHRASE
+./cipherwhisper serve --data alice --name Alice \
   --bind 127.0.0.1:8790 --peer-bind 127.0.0.1:8800 --open
 ```
 

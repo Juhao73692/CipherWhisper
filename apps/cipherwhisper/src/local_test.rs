@@ -69,7 +69,8 @@ pub async fn run(args: Args) -> Result<()> {
         ))?);
     }
     drop(listeners);
-    let dir = std::env::temp_dir().join(format!("topicairn-local-test-{}", uuid::Uuid::new_v4()));
+    let dir =
+        std::env::temp_dir().join(format!("cipherwhisper-local-test-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir(&dir)?;
     #[cfg(unix)]
     {
@@ -100,7 +101,7 @@ pub async fn run(args: Args) -> Result<()> {
                 "--sync-seconds",
                 "1",
             ])
-            .env("TOPICAIRN_PASSPHRASE", pass.as_str());
+            .env("CIPHERWHISPER_PASSPHRASE", pass.as_str());
         if args.open {
             command.arg("--open");
         }

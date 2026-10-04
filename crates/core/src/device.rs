@@ -1,8 +1,8 @@
 //! Durable client-side mirror. Own device signing key; no center key or peer ratchets.
 use super::*;
+use cipherwhisper_protocol::device::*;
 use reqwest::{Client, Url};
 use std::time::Duration;
-use topicairn_protocol::device::*;
 
 pub fn validate_server(server: &str, ca: &str) -> Result<Client> {
     let url = Url::parse(server)?;

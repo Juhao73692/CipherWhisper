@@ -108,7 +108,7 @@ Enrolled devices have full history and conversation write access, with no right 
 
 Build release binaries with `cargo build --release --workspace --locked`. Default centers connect directly; configure a separate TLS P2P listener as in [p2p-testing.md](p2p-testing.md). If explicitly using legacy Relay, run it and each center under separate least-privilege service accounts, each with its own SQLite directory and passphrase injection. Use a supervised service such as launchd/systemd; no platform installer is included.
 
-Relay 可直接使用内置 TLS：`topicairn relay --bind 0.0.0.0:8787 --tls-cert server.pem --tls-key server-key.pem`。未提供 TLS 时拒绝非 loopback 监听。`topicairn tls-init --host <IP/DNS>` 可为受控测试生成证书；中心端点通过 `--relay-ca` 指定公开 CA。
+Relay 可直接使用内置 TLS：`cipherwhisper relay --bind 0.0.0.0:8787 --tls-cert server.pem --tls-key server-key.pem`。未提供 TLS 时拒绝非 loopback 监听。`cipherwhisper tls-init --host <IP/DNS>` 可为受控测试生成证书；中心端点通过 `--relay-ca` 指定公开 CA。
 
 Example TLS proxy for Relay only (requires independently configured Caddy and domain/DNS):
 

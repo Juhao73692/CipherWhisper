@@ -1,8 +1,8 @@
-# 可选旧 Relay 模式：Topicairn：两台 Mac 测试指南
+# 可选旧 Relay 模式：CipherWhisper：两台 Mac 测试指南
 
 当前默认是无 Relay 的直接 P2P，使用 [直接 P2P 指南](p2p-testing.md)。本文仅适用于显式指定 `--relay` 的旧兼容模式。
 
-`topicairn` 是一个 Universal macOS 命令行可执行文件，包含 Apple Silicon arm64 和 Intel x86_64 两个架构，最低 macOS 13。运行时不需要安装 Rust、Node、Homebrew、SQLite、Caddy 或 OpenSSL；它只链接 macOS 系统库。
+`cipherwhisper` 是一个 Universal macOS 命令行可执行文件，包含 Apple Silicon arm64 和 Intel x86_64 两个架构，最低 macOS 13。运行时不需要安装 Rust、Node、Homebrew、SQLite、Caddy 或 OpenSSL；它只链接 macOS 系统库。
 
 这份指南测试两个用户的中心端点。若两台 Mac 分别作为同一个可信域的中心和客户端，使用同一个程序的 `serve` / `connect` 模式，按 [域内设备同步指南](device-sync.md) 操作；压缩包内也附带 `DEVICES.zh-CN.md`。
 
@@ -16,29 +16,29 @@ Relay 与 Alice 端点是独立角色，拥有不同存储：Relay 不获得 Bob
 
 ## 1. 两台电脑准备
 
-把相同的 `topicairn` 文件分别复制到两台电脑各自的工作目录，例如 `~/TopicairnTest/`。在终端进入该目录：
+把相同的 `cipherwhisper` 文件分别复制到两台电脑各自的工作目录，例如 `~/CipherWhisperTest/`。在终端进入该目录：
 
 ```sh
-cd ~/TopicairnTest
-chmod +x topicairn
-./topicairn --version
-./topicairn --help
+cd ~/CipherWhisperTest
+chmod +x cipherwhisper
+./cipherwhisper --version
+./cipherwhisper --help
 ```
 
-打包文件 `topicairn-macos-universal.tar.gz` 内有这个可执行文件、这份指南和 SHA256SUMS。可以在解压目录运行 `shasum -a 256 -c SHA256SUMS` 验证文件完整性。可执行文件使用本地 ad-hoc 签名，未做 Apple Developer ID 签名/公证；若下载或 AirDrop 后 macOS 拦截，请在系统“隐私与安全性”中对你已核对来源的程序允许运行。
+打包文件 `cipherwhisper-macos-universal.tar.gz` 内有这个可执行文件、这份指南和 SHA256SUMS。可以在解压目录运行 `shasum -a 256 -c SHA256SUMS` 验证文件完整性。可执行文件使用本地 ad-hoc 签名，未做 Apple Developer ID 签名/公证；若下载或 AirDrop 后 macOS 拦截，请在系统“隐私与安全性”中对你已核对来源的程序允许运行。
 
-两台电脑先在同一局域网。确认 A 的局域网 IP，例如 **192.168.1.10**；下文所有这个示例地址都要替换成实际地址。可以通过系统设置查看，或尝试 `ipconfig getifaddr en0`；有线网卡可能是其他接口。Mac 防火墙询问时允许 `topicairn` 接收连接。
+两台电脑先在同一局域网。确认 A 的局域网 IP，例如 **192.168.1.10**；下文所有这个示例地址都要替换成实际地址。可以通过系统设置查看，或尝试 `ipconfig getifaddr en0`；有线网卡可能是其他接口。Mac 防火墙询问时允许 `cipherwhisper` 接收连接。
 
 ## 2. 电脑 A：生成测试 TLS 证书并启动 Relay
 
 在 A 的终端 1：
 
 ```sh
-cd ~/TopicairnTest
-./topicairn tls-init --host 192.168.1.10 --out relay-tls
+cd ~/CipherWhisperTest
+./cipherwhisper tls-init --host 192.168.1.10 --out relay-tls
 cp relay-tls/ca.pem relay-ca.pem
 shasum -a 256 relay-ca.pem
-./topicairn relay --bind 0.0.0.0:8787 --database relay.sqlite \
+./cipherwhisper relay --bind 0.0.0.0:8787 --database relay.sqlite \
   --tls-cert relay-tls/server.pem --tls-key relay-tls/server-key.pem
 ```
 
@@ -59,11 +59,11 @@ curl --noproxy '*' --cacert relay-ca.pem https://192.168.1.10:8787/health
 A 的终端 2：
 
 ```sh
-cd ~/TopicairnTest
-read -rs 'TOPICAIRN_PASSPHRASE?Alice 的口令（至少 12 bytes）: '; echo
-export TOPICAIRN_PASSPHRASE
+cd ~/CipherWhisperTest
+read -rs 'CIPHERWHISPER_PASSPHRASE?Alice 的口令（至少 12 bytes）: '; echo
+export CIPHERWHISPER_PASSPHRASE
 function ta() {
-  ./topicairn admin --data alice --relay https://127.0.0.1:8787 --relay-ca relay-ca.pem "$@"
+  ./cipherwhisper admin --data alice --relay https://127.0.0.1:8787 --relay-ca relay-ca.pem "$@"
 }
 ta init --name Alice > alice.contact.json
 cat alice.contact.json
@@ -72,11 +72,11 @@ cat alice.contact.json
 B 的终端：
 
 ```sh
-cd ~/TopicairnTest
-read -rs 'TOPICAIRN_PASSPHRASE?Bob 的口令（至少 12 bytes）: '; echo
-export TOPICAIRN_PASSPHRASE
+cd ~/CipherWhisperTest
+read -rs 'CIPHERWHISPER_PASSPHRASE?Bob 的口令（至少 12 bytes）: '; echo
+export CIPHERWHISPER_PASSPHRASE
 function tb() {
-  ./topicairn admin --data bob --relay https://192.168.1.10:8787 --relay-ca relay-ca.pem "$@"
+  ./cipherwhisper admin --data bob --relay https://192.168.1.10:8787 --relay-ca relay-ca.pem "$@"
 }
 tb init --name Bob > bob.contact.json
 cat bob.contact.json
@@ -164,14 +164,14 @@ B 执行 `tb sync`、`tb topics`；数学和 NAS 的历史分别查询，不混�
 A：
 
 ```sh
-./topicairn serve --data alice --relay https://127.0.0.1:8787 \
+./cipherwhisper serve --data alice --relay https://127.0.0.1:8787 \
   --relay-ca relay-ca.pem --bind 127.0.0.1:8790 --open
 ```
 
 B：
 
 ```sh
-./topicairn serve --data bob --relay https://192.168.1.10:8787 \
+./cipherwhisper serve --data bob --relay https://192.168.1.10:8787 \
   --relay-ca relay-ca.pem --bind 127.0.0.1:8790 --open
 ```
 

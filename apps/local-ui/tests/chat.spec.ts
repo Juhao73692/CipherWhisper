@@ -6,7 +6,7 @@ import { resolve, join } from 'node:path';
 import { createServer } from 'node:net';
 import { request as httpRequest } from 'node:http';
 const root = resolve(import.meta.dirname, '../../..');
-const binary = process.env.TOPICAIRN_TEST_BINARY || join(root, 'target/debug/topicairn');
+const binary = process.env.CIPHERWHISPER_TEST_BINARY || join(root, 'target/debug/cipherwhisper');
 let dir: string,
   alice: string,
   bob: string,
@@ -26,9 +26,9 @@ function launch(...args: string[]) {
   const p = spawn(binary, args, {
     env: {
       ...process.env,
-      TOPICAIRN_PASSPHRASE: 'browser-integration-test-passphrase',
+      CIPHERWHISPER_PASSPHRASE: 'browser-integration-test-passphrase',
       PATH: `${join(dir, 'bin')}:${process.env.PATH}`,
-      TOPICAIRN_OPEN_CAPTURE: join(dir, 'open-url'),
+      CIPHERWHISPER_OPEN_CAPTURE: join(dir, 'open-url'),
     },
     stdio: 'ignore',
   });
@@ -69,12 +69,12 @@ async function login(page: Page, base: string, token: string) {
   await expect(page.locator('.workspace')).toBeVisible();
 }
 test.beforeAll(async () => {
-  dir = await mkdtemp(join(tmpdir(), 'topicairn-browser-'));
+  dir = await mkdtemp(join(tmpdir(), 'cipherwhisper-browser-'));
   relay = `http://127.0.0.1:${await port()}`;
   alice = `http://127.0.0.1:${await port()}`;
   bob = `http://127.0.0.1:${await port()}`;
   await mkdir(join(dir, 'bin'));
-  const opener = '#!/bin/sh\numask 077\nprintf \'%s\' \"$1\" > \"$TOPICAIRN_OPEN_CAPTURE\"\n';
+  const opener = '#!/bin/sh\numask 077\nprintf \'%s\' \"$1\" > \"$CIPHERWHISPER_OPEN_CAPTURE\"\n';
   for (const name of ['open', 'xdg-open'])
     await writeFile(join(dir, 'bin', name), opener, { mode: 0o700 });
   launch('relay', '--bind', new URL(relay).host, '--database', join(dir, 'relay.sqlite'));

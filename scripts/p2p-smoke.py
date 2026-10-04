@@ -12,13 +12,13 @@ from smoke import api, free_port, wait_for, BODY, ENV
 
 def main():
     parser=argparse.ArgumentParser()
-    parser.add_argument('--binary',type=Path,default=Path(__file__).resolve().parents[1]/'target/debug/topicairn')
+    parser.add_argument('--binary',type=Path,default=Path(__file__).resolve().parents[1]/'target/debug/cipherwhisper')
     parser.add_argument('--tls',action='store_true')
     options=parser.parse_args()
     binary=options.binary.resolve()
     env={k:v for k,v in ENV.items() if k.lower() not in ('http_proxy','https_proxy','all_proxy')}
     processes,logs=[],[]
-    with tempfile.TemporaryDirectory(prefix='topicairn-p2p-smoke-') as tmp:
+    with tempfile.TemporaryDirectory(prefix='cipherwhisper-p2p-smoke-') as tmp:
         root=Path(tmp)
         a,b=['http://127.0.0.1:'+str(free_port()) for _ in range(2)]
         peer_urls=[('https' if options.tls else 'http')+'://127.0.0.1:'+str(free_port()) for _ in range(2)]

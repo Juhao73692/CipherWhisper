@@ -2,7 +2,7 @@ use anyhow::{Result, ensure};
 use clap::Parser;
 use std::{path::PathBuf, time::Duration};
 #[derive(Parser)]
-#[command(about = "Topicairn opaque ciphertext relay", version)]
+#[command(about = "CipherWhisper opaque ciphertext relay", version)]
 pub struct RelayArgs {
     #[arg(long, default_value = "127.0.0.1:8787")]
     pub bind: std::net::SocketAddr,
@@ -32,7 +32,7 @@ pub async fn run(args: RelayArgs) -> Result<()> {
         let listener = std::net::TcpListener::bind(args.bind)?;
         listener.set_nonblocking(true)?;
         println!(
-            "Topicairn HTTPS relay listening on {}",
+            "CipherWhisper HTTPS relay listening on {}",
             listener.local_addr()?
         );
         let handle = axum_server::Handle::new();
@@ -51,7 +51,7 @@ pub async fn run(args: RelayArgs) -> Result<()> {
     } else {
         let listener = tokio::net::TcpListener::bind(args.bind).await?;
         println!(
-            "Topicairn HTTP loopback relay listening on {}",
+            "CipherWhisper HTTP loopback relay listening on {}",
             listener.local_addr()?
         );
         axum::serve(listener, app)

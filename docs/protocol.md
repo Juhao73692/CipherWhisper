@@ -1,4 +1,6 @@
-# Topicairn protocol v1
+# CipherWhisper protocol v1
+
+The product was renamed from Topicairn. Existing `topicairn.*.v1` signing domain separators remain exact protocol bytes for compatibility; do not change them to match the product name.
 
 Transport-independent conversation events are encrypted between **Trust Domain center endpoints**. Local devices use the separate internal protocol below; they never appear in external routing or prekeys. Wire format is UTF-8 JSON; time values are Unix seconds. IDs are UUID strings except user/device IDs, which are Ed25519 fingerprints.
 

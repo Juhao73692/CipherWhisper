@@ -1,9 +1,9 @@
 //! Direct encrypted delivery. Ingress never waits on the outbound endpoint mutex
 //! or mutates ratchets: simultaneous first contact cannot deadlock both centers.
 use super::*;
+use cipherwhisper_protocol::p2p::*;
 use reqwest::{Client, Url};
 use std::{collections::HashSet, time::Duration};
-use topicairn_protocol::p2p::*;
 
 pub fn http_client(endpoint: &str, ca: Option<&str>) -> Result<Client> {
     let url = Url::parse(endpoint)?;

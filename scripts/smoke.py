@@ -17,7 +17,7 @@ import urllib.request
 
 ROOT = Path(__file__).resolve().parents[1]
 BIN = ROOT / "target" / "debug"
-ENV = {**os.environ, "TOPICAIRN_PASSPHRASE": "process-test-only-passphrase"}
+ENV = {**os.environ, "CIPHERWHISPER_PASSPHRASE": "process-test-only-passphrase"}
 BODY = "# 原始 Markdown\n\n$x^2$\n\n$$E=mc^2$$\n\n```rust\nfn main() {}\n```\n"
 # Never use a host proxy for localhost integration tests.
 HTTP = urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -62,16 +62,16 @@ def main():
         options.binary = options.binary.resolve()
         assert options.binary.exists(), "unified executable missing"
     else:
-        for name in ("topicairn-relay", "topicairn-domain", "topicairn-cli"):
+        for name in ("cipherwhisper-relay", "cipherwhisper-domain", "cipherwhisper-cli"):
             assert (BIN / name).exists(), "run cargo build --workspace first"
 
     def command(name):
         if options.binary:
-            mode = {"topicairn-relay": "relay", "topicairn-domain": "serve", "topicairn-cli": "admin"}[name]
+            mode = {"cipherwhisper-relay": "relay", "cipherwhisper-domain": "serve", "cipherwhisper-cli": "admin"}[name]
             return [str(options.binary), mode]
         return [str(BIN / name)]
     processes, logs = [], []
-    with tempfile.TemporaryDirectory(prefix="topicairn-smoke-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="cipherwhisper-smoke-") as tmp:
         data = Path(tmp)
         relay_url = ("https" if options.tls else "http") + "://127.0.0.1:" + str(free_port())
         a_url = "http://127.0.0.1:" + str(free_port())
@@ -104,16 +104,16 @@ def main():
                     process.wait()
 
         def cli(who, *args, raw=False):
-            result = subprocess.run([*command("topicairn-cli"), "--data", str(data / who), "--relay", relay_url, *ca_args, *args], env=ENV, capture_output=True, text=True, check=True)
+            result = subprocess.run([*command("cipherwhisper-cli"), "--data", str(data / who), "--relay", relay_url, *ca_args, *args], env=ENV, capture_output=True, text=True, check=True)
             return result.stdout.strip() if raw else json.loads(result.stdout)
 
         def relay():
-            process = start("topicairn-relay", ["--bind", relay_url.split("://", 1)[1], "--database", str(data / "relay.sqlite"), *tls_args])
+            process = start("cipherwhisper-relay", ["--bind", relay_url.split("://", 1)[1], "--database", str(data / "relay.sqlite"), *tls_args])
             wait_for(lambda: api(relay_url, "/health"))
             return process
 
         def domain(who, url):
-            process = start("topicairn-domain", ["--data", str(data / who), "--relay", relay_url, "--bind", url.removeprefix("http://"), "--sync-seconds", "1", *ca_args])
+            process = start("cipherwhisper-domain", ["--data", str(data / who), "--relay", relay_url, "--bind", url.removeprefix("http://"), "--sync-seconds", "1", *ca_args])
             token_file = data / who / "admin.token"
             wait_for(lambda: token_file.exists())
             token = token_file.read_text().strip()

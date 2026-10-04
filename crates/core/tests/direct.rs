@@ -1,7 +1,7 @@
 use anyhow::Result;
+use cipherwhisper_core::{Endpoint, direct::http_client};
+use cipherwhisper_protocol::*;
 use tempfile::TempDir;
-use topicairn_core::{Endpoint, direct::http_client};
-use topicairn_protocol::*;
 use uuid::Uuid;
 const PASS: &str = "direct-test-passphrase-123";
 fn endpoints() -> Result<(TempDir, Endpoint, Endpoint)> {

@@ -16,14 +16,14 @@ from smoke import api, free_port, wait_for, BODY, ENV
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--binary", type=Path, default=Path(__file__).resolve().parents[1] / "target/debug/topicairn")
+    parser.add_argument("--binary", type=Path, default=Path(__file__).resolve().parents[1] / "target/debug/cipherwhisper")
     parser.add_argument("--direct", action="store_true", help="direct P2P between centers; no relay process")
     args = parser.parse_args()
     binary = args.binary.resolve()
     processes, logs = [], []
     # Native clients must not inherit an unrelated workstation proxy in this local test.
     env = {k: v for k, v in ENV.items() if k.lower() not in ("http_proxy", "https_proxy", "all_proxy")}
-    with tempfile.TemporaryDirectory(prefix="topicairn-device-smoke-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="cipherwhisper-device-smoke-") as tmp:
         root = Path(tmp)
         relay, alice, bob, one, two = ["http://127.0.0.1:" + str(free_port()) for _ in range(5)]
         device_url = "https://127.0.0.1:" + str(free_port())

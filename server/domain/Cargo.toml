@@ -1,5 +1,5 @@
 [package]
-name = "topicairn-domain"
+name = "cipherwhisper-domain"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -10,8 +10,8 @@ serde_json.workspace = true
 axum.workspace = true
 tokio.workspace = true
 clap.workspace = true
-topicairn-core.workspace = true
-topicairn-protocol.workspace = true
+cipherwhisper-core.workspace = true
+cipherwhisper-protocol.workspace = true
 subtle = "2"
 zeroize = "1"
 getrandom = "0.4"

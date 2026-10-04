@@ -1,11 +1,11 @@
 //! One local API/UI backed by either the center or a separately keyed replica.
 use anyhow::{Result, bail};
-use topicairn_core::{
+use cipherwhisper_core::{
     Endpoint, OutboxStatus, SyncReport,
     device::{Pending, Replica},
 };
-use topicairn_protocol::device::*;
-use topicairn_protocol::*;
+use cipherwhisper_protocol::device::*;
+use cipherwhisper_protocol::*;
 pub(crate) enum Workspace {
     Center(Endpoint),
     Client(Box<Replica>),

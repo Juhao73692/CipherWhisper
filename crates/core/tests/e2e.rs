@@ -1,12 +1,12 @@
 use anyhow::Result;
+use cipherwhisper_core::{Endpoint, transport::RelayClient};
+use cipherwhisper_protocol::*;
 use rusqlite::Connection;
 use std::{
     path::{Path, PathBuf},
     time::Duration,
 };
 use tempfile::TempDir;
-use topicairn_core::{Endpoint, transport::RelayClient};
-use topicairn_protocol::*;
 use uuid::Uuid;
 use vodozemac::olm::{Account, OlmMessage, SessionConfig};
 
@@ -270,7 +270,7 @@ impl TestRelay {
     async fn start(path: &Path) -> Result<Self> {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
         let url = format!("http://{}", listener.local_addr()?);
-        let app = topicairn_relay::router(path)?;
+        let app = cipherwhisper_relay::router(path)?;
         let task = tokio::spawn(async move {
             axum::serve(listener, app).await.unwrap();
         });
@@ -290,7 +290,7 @@ impl TestRelay {
         self.stop().await;
         let addr = self.url.strip_prefix("http://").unwrap();
         let listener = tokio::net::TcpListener::bind(addr).await?;
-        let app = topicairn_relay::router(&self.path)?;
+        let app = cipherwhisper_relay::router(&self.path)?;
         self.task = Some(tokio::spawn(async move {
             axum::serve(listener, app).await.unwrap();
         }));
@@ -512,7 +512,7 @@ async fn tls_ca_and_hostname_verification_are_enforced() -> Result<()> {
     let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
     let port = listener.local_addr()?.port();
     listener.set_nonblocking(true)?;
-    let app = topicairn_relay::router(root.path().join("relay.sqlite"))?;
+    let app = cipherwhisper_relay::router(root.path().join("relay.sqlite"))?;
     let task = tokio::spawn(async move {
         axum_server::tls_rustls::from_tcp_rustls(listener, config)
             .unwrap()

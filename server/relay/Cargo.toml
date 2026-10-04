@@ -1,5 +1,5 @@
 [package]
-name = "topicairn-relay"
+name = "cipherwhisper-relay"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -11,5 +11,5 @@ rusqlite.workspace = true
 axum.workspace = true
 tokio.workspace = true
 clap.workspace = true
-topicairn-protocol.workspace = true
+cipherwhisper-protocol.workspace = true
 axum-server.workspace = true

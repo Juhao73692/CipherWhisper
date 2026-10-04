@@ -55,7 +55,7 @@ pub fn generate(args: TlsArgs) -> Result<()> {
     ca_params.is_ca = IsCa::Ca(BasicConstraints::Constrained(0));
     ca_params
         .distinguished_name
-        .push(DnType::CommonName, "Topicairn test relay CA");
+        .push(DnType::CommonName, "CipherWhisper test TLS CA");
     ca_params.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::CrlSign];
     ca_params.not_before = now - Duration::days(1);
     ca_params.not_after = now + Duration::days(365);
@@ -67,7 +67,7 @@ pub fn generate(args: TlsArgs) -> Result<()> {
     let mut params = CertificateParams::new(hosts)?;
     params
         .distinguished_name
-        .push(DnType::CommonName, "Topicairn test relay");
+        .push(DnType::CommonName, "CipherWhisper test server");
     params.key_usages = vec![KeyUsagePurpose::DigitalSignature];
     params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
     params.not_before = now - Duration::days(1);
@@ -94,7 +94,7 @@ pub fn generate(args: TlsArgs) -> Result<()> {
         "{}",
         serde_json::to_string_pretty(&serde_json::json!({
             "ca":args.out.join("ca.pem"),"certificate":args.out.join("server.pem"),"privateKey":args.out.join("server-key.pem"),
-            "caFileSha256":topicairn_protocol::digest(ca_pem.as_bytes()),"hosts":args.host,"validDays":365,
+            "caFileSha256":cipherwhisper_protocol::digest(ca_pem.as_bytes()),"hosts":args.host,"validDays":365,
         }))?
     );
     Ok(())

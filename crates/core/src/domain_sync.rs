@@ -1,6 +1,6 @@
 //! Center-owned journal and device authorization; all journal triggers share the data transaction.
 use super::*;
-use topicairn_protocol::device::*;
+use cipherwhisper_protocol::device::*;
 const TOPIC_JSON: &str = "json_object('id',new.id,'peerId',new.peer_id,'title',new.title,'createdAt',new.created_at,'updatedAt',new.updated_at,'archived',json(CASE new.archived WHEN 1 THEN 'true' ELSE 'false' END))";
 const MESSAGE_JSON: &str = "json_object('id',new.id,'topicId',new.topic_id,'senderId',new.sender_id,'timestamp',new.timestamp,'body',new.body,'format',new.format,'replyTo',new.reply_to,'delivery',new.delivery)";
 pub(crate) fn initialize(db: &mut Connection) -> Result<()> {

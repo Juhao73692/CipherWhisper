@@ -1,8 +1,8 @@
 use anyhow::{Result, ensure};
+use cipherwhisper_protocol::RequestAuth;
 use reqwest::{Client, Method, Url};
 use serde::de::DeserializeOwned;
 use std::{path::Path, time::Duration};
-use topicairn_protocol::RequestAuth;
 
 #[derive(Clone)]
 pub struct RelayClient {

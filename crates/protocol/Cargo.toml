@@ -1,5 +1,5 @@
 [package]
-name = "topicairn-protocol"
+name = "cipherwhisper-protocol"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

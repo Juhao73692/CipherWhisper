@@ -1,6 +1,6 @@
 # 可信域内设备同步：同一个软件，两种模式
 
-`topicairn serve` 是可信域中心，`topicairn connect` 是它的设备客户端。两者使用**同一个 macOS Universal 可执行文件、同一个本机聊天界面**；无需安装 Rust、Node 或另一套客户端。
+`cipherwhisper serve` 是可信域中心，`cipherwhisper connect` 是它的设备客户端。两者使用**同一个 macOS Universal 可执行文件、同一个本机聊天界面**；无需安装 Rust、Node 或另一套客户端。
 
 ```text
 Alice Laptop -- authenticated TLS 1.3 --> Alice center
@@ -15,22 +15,22 @@ Alice Desktop -- authenticated TLS 1.3 --> Alice center
 
 ## 在两台 Mac 上测试一个可信域
 
-假设中心 Mac 的地址是 `192.168.1.10`，客户端 Mac 能连接该地址的 TCP 8792 端口。下载同一个 `topicairn` 到两台机器；最低 macOS 13，支持 Apple Silicon 和 Intel。中心默认直接 P2P，外部通信与域内设备同步使用独立监听。
+假设中心 Mac 的地址是 `192.168.1.10`，客户端 Mac 能连接该地址的 TCP 8792 端口。下载同一个 `cipherwhisper` 到两台机器；最低 macOS 13，支持 Apple Silicon 和 Intel。中心默认直接 P2P，外部通信与域内设备同步使用独立监听。
 
 ### 1. 中心开启设备 HTTPS 端口
 
 在中心 Mac，为实际连接的 IP/DNS 生成证书（地址必须与证书一致）：
 
 ```sh
-./topicairn tls-init --host 192.168.1.10 --out device-tls
+./cipherwhisper tls-init --host 192.168.1.10 --out device-tls
 ```
 
 已有中心使用**原数据目录和原口令**。退出原 `serve` 后重新启动，添加以下设备参数，并按需要保留原 P2P 地址/证书参数：
 
 ```sh
-read -rs 'TOPICAIRN_PASSPHRASE?中心原口令: '; echo
-export TOPICAIRN_PASSPHRASE
-./topicairn serve --data alice --name Alice \
+read -rs 'CIPHERWHISPER_PASSPHRASE?中心原口令: '; echo
+export CIPHERWHISPER_PASSPHRASE
+./cipherwhisper serve --data alice --name Alice \
   --peer-bind 0.0.0.0:8800 --peer-url https://192.168.1.10:8800 \
   --peer-tls-cert device-tls/server.pem --peer-tls-key device-tls/server-key.pem \
   --peer-ca device-tls/ca.pem \
@@ -50,9 +50,9 @@ export TOPICAIRN_PASSPHRASE
 在客户端 Mac 设置自己的口令，可以与中心不同：
 
 ```sh
-read -rs 'TOPICAIRN_PASSPHRASE?客户端口令（至少 12 bytes）: '; echo
-export TOPICAIRN_PASSPHRASE
-./topicairn device-init --data laptop --name 'Alice Laptop' > laptop.device.json
+read -rs 'CIPHERWHISPER_PASSPHRASE?客户端口令（至少 12 bytes）: '; echo
+export CIPHERWHISPER_PASSPHRASE
+./cipherwhisper device-init --data laptop --name 'Alice Laptop' > laptop.device.json
 ```
 
 通过可信渠道将 `laptop.device.json` 交给中心。这只是公开设备卡，包含完整 `dev_…` 指纹和自签名。不要传输 `laptop/` 数据目录、口令、token 或私钥。
@@ -68,7 +68,7 @@ export TOPICAIRN_PASSPHRASE
 在客户端 Mac：
 
 ```sh
-./topicairn connect --data laptop \
+./cipherwhisper connect --data laptop \
   --pairing '<下载的 dev_….pair.json>' \
   --trust-domain '<核对后的完整 td_… 指纹>' --open
 ```
@@ -78,7 +78,7 @@ export TOPICAIRN_PASSPHRASE
 之后重启只需设置同一个客户端口令：
 
 ```sh
-./topicairn connect --data laptop --open
+./cipherwhisper connect --data laptop --open
 ```
 
 客户端默认每 5 秒主动拉取；`--sync-seconds 1` 可用于快速测试。中心自己的来信、发信、联系人、话题和投递状态都会同步。点击 **设备同步与队列** 可以查看中心地址、本机/已确认游标、待处理操作及失败原文。
@@ -107,4 +107,4 @@ export TOPICAIRN_PASSPHRASE
 
 域内加密使用成熟的 **rustls TLS 1.3**（默认密钥交换套件、认证加密、证书校验），另外以 Ed25519 设备签名认证请求，以中心身份签名认证响应。它不是为每台设备另外创建一份外部 Double Ratchet；中心间 E2EE 的算法和边界保持独立。本地历史与索引为明文 SQLite，私钥和配对配置经 Argon2id + XChaCha20-Poly1305 保护，目录 0700 / 数据库 0600。设备自身属于用户的可信域，使用者须保护本机环境。
 
-测试：`cargo test --workspace --locked`、`python3 scripts/device-smoke.py --direct --binary dist/topicairn`、`npm --prefix apps/local-ui run test:browser`。设备 smoke 使用临时目录/动态端口在直接 P2P 模式启动两个中心和两个设备共四个进程，不启动 Relay，结束后自动清理。
+测试：`cargo test --workspace --locked`、`python3 scripts/device-smoke.py --direct --binary dist/cipherwhisper`、`npm --prefix apps/local-ui run test:browser`。设备 smoke 使用临时目录/动态端口在直接 P2P 模式启动两个中心和两个设备共四个进程，不启动 Relay，结束后自动清理。

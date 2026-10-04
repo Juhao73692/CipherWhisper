@@ -1,8 +1,8 @@
 use anyhow::{Result, ensure};
+use cipherwhisper_core::device::Replica;
+use cipherwhisper_protocol::device::Pairing;
 use clap::Parser;
 use std::{net::SocketAddr, path::PathBuf};
-use topicairn_core::device::Replica;
-use topicairn_protocol::device::Pairing;
 use zeroize::Zeroizing;
 #[derive(Parser)]
 pub struct DeviceInitArgs {
@@ -12,7 +12,7 @@ pub struct DeviceInitArgs {
     pub name: String,
     #[arg(
         long,
-        env = "TOPICAIRN_PASSPHRASE",
+        env = cipherwhisper_core::passphrase_env(),
         hide_env_values = true,
         hide = true
     )]
@@ -46,7 +46,7 @@ pub struct ClientArgs {
     pub open: bool,
     #[arg(
         long,
-        env = "TOPICAIRN_PASSPHRASE",
+        env = cipherwhisper_core::passphrase_env(),
         hide_env_values = true,
         hide = true
     )]

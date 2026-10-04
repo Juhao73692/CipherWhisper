@@ -10,9 +10,9 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, post},
 };
+use cipherwhisper_protocol::{MAX_BODY, device::*};
 use serde::Deserialize;
 use std::{path::Path, sync::Arc};
-use topicairn_protocol::{MAX_BODY, device::*};
 use zeroize::Zeroizing;
 #[derive(Clone)]
 pub(crate) struct DeviceConfig {

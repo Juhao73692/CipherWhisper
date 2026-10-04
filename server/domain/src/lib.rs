@@ -8,6 +8,8 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, post},
 };
+use cipherwhisper_core::{Endpoint, SyncReport};
+use cipherwhisper_protocol::*;
 use clap::Parser;
 use serde::Deserialize;
 use std::{
@@ -18,21 +20,19 @@ use std::{
 };
 use subtle::ConstantTimeEq;
 use tokio::sync::{Mutex, watch};
-use topicairn_core::{Endpoint, SyncReport};
-use topicairn_protocol::*;
 use zeroize::Zeroizing;
 mod client;
 mod device_server;
 mod peer_server;
 mod ui;
 mod workspace;
+use cipherwhisper_protocol::device::{DeviceCard, Pairing};
 pub use client::{ClientArgs, DeviceInitArgs, init_device, run_client};
-use topicairn_protocol::device::{DeviceCard, Pairing};
 use workspace::Workspace;
 
 #[derive(Parser)]
 #[command(
-    about = "Topicairn Personal Trust Domain center with a local browser UI",
+    about = "CipherWhisper Personal Trust Domain center with a local browser UI",
     version
 )]
 pub struct DomainArgs {
@@ -62,7 +62,7 @@ pub struct DomainArgs {
     pub bind: std::net::SocketAddr,
     #[arg(
         long,
-        env = "TOPICAIRN_PASSPHRASE",
+        env = cipherwhisper_core::passphrase_env(),
         hide_env_values = true,
         hide = true
     )]
@@ -264,7 +264,9 @@ async fn status(State(state): State<AppState>) -> Json<serde_json::Value> {
         serde_json::json!({"protocol":VERSION,"mode":workspace.mode(),"transport":workspace.transport_kind(),"device":workspace.device_info().ok().flatten(),"deviceServer":state.device_config.as_ref().map(|c|&c.server),"lastSync":*state.last_sync.lock().await}),
     )
 }
-async fn peer_profile(State(state): State<AppState>) -> Api<topicairn_protocol::p2p::PeerProfile> {
+async fn peer_profile(
+    State(state): State<AppState>,
+) -> Api<cipherwhisper_protocol::p2p::PeerProfile> {
     Ok(Json(state.domain.lock().await.center()?.direct_profile()?))
 }
 async fn peer_routes(State(state): State<AppState>) -> Api<serde_json::Value> {
@@ -275,7 +277,7 @@ async fn peer_routes(State(state): State<AppState>) -> Api<serde_json::Value> {
 }
 async fn import_direct_peer(
     State(state): State<AppState>,
-    Json(profile): Json<topicairn_protocol::p2p::PeerProfile>,
+    Json(profile): Json<cipherwhisper_protocol::p2p::PeerProfile>,
 ) -> Api<serde_json::Value> {
     state
         .domain
@@ -349,7 +351,7 @@ pub async fn run(args: DomainArgs) -> Result<()> {
             .unwrap()
             .trim_end_matches('/')
             .to_owned();
-        topicairn_core::device::validate_server(&server, &ca_pem)?;
+        cipherwhisper_core::device::validate_server(&server, &ca_pem)?;
         let tls = device_server::tls(
             args.device_tls_cert.as_ref().unwrap(),
             args.device_tls_key.as_ref().unwrap(),

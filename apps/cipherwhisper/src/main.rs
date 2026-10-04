@@ -3,9 +3,9 @@ mod local_test;
 mod tls;
 #[derive(Parser)]
 #[command(
-    name = "topicairn",
+    name = "cipherwhisper",
     version,
-    about = "Topicairn: one executable for Trust Domain centers, device clients, local topic chat and opaque relays"
+    about = "CipherWhisper: end-to-end encrypted P2P chat with local topics and Trust Domain device sync"
 )]
 struct Args {
     #[command(subcommand)]
@@ -16,27 +16,27 @@ enum Command {
     /// Start two temporary P2P chat instances, pair them, and optionally open both UIs.
     LocalTest(local_test::Args),
     /// Run an opaque ciphertext relay. Remote binds require TLS.
-    Relay(topicairn_relay::RelayArgs),
+    Relay(cipherwhisper_relay::RelayArgs),
     /// Run this computer's Trust Domain center and embedded local UI (--open).
-    Serve(Box<topicairn_domain::DomainArgs>),
+    Serve(Box<cipherwhisper_domain::DomainArgs>),
     /// Create an independent internal device identity; share only its public JSON card.
-    DeviceInit(topicairn_domain::DeviceInitArgs),
+    DeviceInit(cipherwhisper_domain::DeviceInitArgs),
     /// Pull center history and send through an authorized encrypted device connection.
-    Connect(topicairn_domain::ClientArgs),
+    Connect(cipherwhisper_domain::ClientArgs),
     /// Create identities, manage peers/topics and send/sync without running a daemon.
-    Admin(topicairn_cli::AdminArgs),
-    /// Generate private test TLS credentials and a public CA for a relay or device server.
+    Admin(cipherwhisper_cli::AdminArgs),
+    /// Generate private test TLS credentials and a public CA for peer or device servers.
     TlsInit(tls::TlsArgs),
 }
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     match Args::parse().command {
         Command::LocalTest(args) => local_test::run(args).await,
-        Command::Relay(args) => topicairn_relay::run(args).await,
-        Command::Serve(args) => topicairn_domain::run(*args).await,
-        Command::DeviceInit(args) => topicairn_domain::init_device(args),
-        Command::Connect(args) => topicairn_domain::run_client(args).await,
-        Command::Admin(args) => topicairn_cli::run(args).await,
+        Command::Relay(args) => cipherwhisper_relay::run(args).await,
+        Command::Serve(args) => cipherwhisper_domain::run(*args).await,
+        Command::DeviceInit(args) => cipherwhisper_domain::init_device(args),
+        Command::Connect(args) => cipherwhisper_domain::run_client(args).await,
+        Command::Admin(args) => cipherwhisper_cli::run(args).await,
         Command::TlsInit(args) => tls::generate(args),
     }
 }

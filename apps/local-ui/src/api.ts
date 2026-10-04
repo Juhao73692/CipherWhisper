@@ -22,7 +22,7 @@ export async function api<T>(path: string, data?: unknown): Promise<T> {
     throw new Error(response.ok ? '服务响应格式错误' : `请求失败 (${response.status})`);
   }
   if (!response.ok) {
-    if (response.status === 401) window.dispatchEvent(new Event('topicairn:locked'));
+    if (response.status === 401) window.dispatchEvent(new Event('cipherwhisper:locked'));
     throw new Error(result.error || `请求失败 (${response.status})`);
   }
   return result as T;

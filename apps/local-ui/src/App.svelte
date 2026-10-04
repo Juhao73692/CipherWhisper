@@ -519,7 +519,7 @@
       lock();
       error = '本机授权已失效，请重新解锁。';
     };
-    window.addEventListener('topicairn:locked', locked);
+    window.addEventListener('cipherwhisper:locked', locked);
     const hash = new URLSearchParams(location.hash.slice(1));
     const code = hash.get('bootstrap');
     history.replaceState(null, '', location.pathname);
@@ -549,7 +549,7 @@
     }, 5000);
     return () => {
       clearInterval(timer);
-      window.removeEventListener('topicairn:locked', locked);
+      window.removeEventListener('cipherwhisper:locked', locked);
       setToken('');
     };
   });
@@ -558,7 +558,7 @@
 {#if !unlocked}
   <main class="unlock-page">
     <div class="unlock-brand">
-      <span class="brand-mark">◒</span> Topicairn <span class="eyebrow">PERSONAL TRUST DOMAIN</span>
+      <span class="brand-mark">◒</span> CipherWhisper <span class="eyebrow">PRIVATE P2P CHAT</span>
     </div>
     <section class="unlock-card">
       <span class="eyebrow accent">LOCAL WORKSPACE</span>
@@ -590,7 +590,7 @@
       </form>
       {#if error}<p class="error" role="alert">{error}</p>{/if}
       <p class="hint">
-        使用 <code>topicairn serve … --open</code> 可自动打开并解锁。授权只保存在当前页面内存中。
+        使用 <code>cipherwhisper serve … --open</code> 可自动打开并解锁。授权只保存在当前页面内存中。
       </p>
     </section>
     <div class="unlock-foot">
@@ -611,7 +611,7 @@
   >
     <aside class="peer-panel">
       <div class="brand">
-        <span class="brand-mark">◒</span><span>Topicairn<small>PRIVATE BY DESIGN</small></span>
+        <span class="brand-mark">◒</span><span>CipherWhisper<small>PRIVATE BY DESIGN</small></span>
       </div>
       <button class="search-trigger" onclick={() => openModal('search')}
         ><span>⌕</span> 搜索本机消息 <kbd>FTS</kbd></button

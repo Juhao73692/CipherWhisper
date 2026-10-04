@@ -7,6 +7,7 @@ use axum::{
     middleware::Next,
     response::{IntoResponse, Response},
 };
+use cipherwhisper_protocol::digest;
 use serde::Deserialize;
 use std::{
     sync::Arc,
@@ -14,7 +15,6 @@ use std::{
 };
 use subtle::ConstantTimeEq;
 use tokio::sync::Mutex;
-use topicairn_protocol::digest;
 use zeroize::Zeroizing;
 include!(concat!(env!("OUT_DIR"), "/ui_assets.rs"));
 

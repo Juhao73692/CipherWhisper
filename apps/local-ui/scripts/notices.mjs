@@ -2,7 +2,7 @@ import { readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 const root = resolve(import.meta.dirname, '..');
 const lock = JSON.parse(readFileSync(resolve(root, 'package-lock.json'), 'utf8'));
-let text = 'Topicairn embedded UI — third-party notices\n\n';
+let text = 'CipherWhisper embedded UI — third-party notices\n\n';
 for (const [path, entry] of Object.entries(lock.packages).sort(([a], [b]) =>
   a.localeCompare(b, 'en'),
 )) {

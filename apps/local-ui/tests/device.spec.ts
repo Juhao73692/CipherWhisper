@@ -6,11 +6,11 @@ import { resolve, join } from 'node:path';
 import { createServer } from 'node:net';
 
 const root = resolve(import.meta.dirname, '../../..');
-const binary = process.env.TOPICAIRN_TEST_BINARY || join(root, 'target/debug/topicairn');
+const binary = process.env.CIPHERWHISPER_TEST_BINARY || join(root, 'target/debug/cipherwhisper');
 const env = Object.fromEntries(
   Object.entries({
     ...process.env,
-    TOPICAIRN_PASSPHRASE: 'browser-device-integration-passphrase',
+    CIPHERWHISPER_PASSPHRASE: 'browser-device-integration-passphrase',
   }).filter(([key]) => !['http_proxy', 'https_proxy', 'all_proxy'].includes(key.toLowerCase())),
 );
 const processes: ChildProcess[] = [];
@@ -67,7 +67,7 @@ async function login(page: Page, base: string, token: string) {
   await expect(page.locator('.workspace')).toBeVisible();
 }
 test.beforeAll(async () => {
-  dir = await mkdtemp(join(tmpdir(), 'topicairn-device-browser-'));
+  dir = await mkdtemp(join(tmpdir(), 'cipherwhisper-device-browser-'));
   relay = `http://127.0.0.1:${await port()}`;
   center = `http://127.0.0.1:${await port()}`;
   bob = `http://127.0.0.1:${await port()}`;

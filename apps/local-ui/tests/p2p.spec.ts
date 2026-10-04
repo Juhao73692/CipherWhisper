@@ -4,7 +4,7 @@ import { readFile } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
 import { createServer } from 'node:net';
 const root = resolve(import.meta.dirname, '../../..');
-const binary = process.env.TOPICAIRN_TEST_BINARY || join(root, 'target/debug/topicairn');
+const binary = process.env.CIPHERWHISPER_TEST_BINARY || join(root, 'target/debug/cipherwhisper');
 let launcher: ChildProcess, alice: string, bob: string, aToken: string, bToken: string;
 async function port() {
   const server = createServer();

@@ -1,4 +1,4 @@
-name: topicairn-ci
+name: cipherwhisper-ci
 on: [push, pull_request]
 permissions:
   contents: read
@@ -38,7 +38,7 @@ jobs:
       - name: Real-process smoke test
         run: python3 scripts/smoke.py
       - name: Single-executable HTTPS smoke test
-        run: python3 scripts/smoke.py --binary target/debug/topicairn --tls
+        run: python3 scripts/smoke.py --binary target/debug/cipherwhisper --tls
       - name: Internal device encrypted-sync smoke test
         run: python3 scripts/device-smoke.py
       - name: Browser integration tests

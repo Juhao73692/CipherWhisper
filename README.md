@@ -1,6 +1,6 @@
-# Topicairn
+# CipherWhisper
 
-**Topic + Cairn**：用独立话题组织消息，用可信节点连接个人可信域。
+**Cipher + Whisper**：加密的私语。端到端加密的 P2P 聊天，以独立话题组织交流。
 
 Rust MVP：两个 Personal Trust Domain 的中心计算机**直接 P2P**，使用经过身份认证的 Olm 3DH / Double Ratchet 端到端加密，不需要 Relay。中心拥有自己的稳定身份、SQLite 历史与本机聊天 UI；授权设备通过独立 HTTPS 协议同步自己的中心。
 
@@ -15,7 +15,7 @@ Bob devices   -- authenticated TLS 1.3 --> Bob center
 下载或构建同一个 macOS Universal 可执行文件，在它所在目录运行：
 
 ```sh
-./topicairn local-test --open
+./cipherwhisper local-test --open
 ```
 
 自动启动 Alice 和 Bob 两个中心，互相导入签名连接卡并验证连接。UI 分别在 `http://127.0.0.1:8790/`、`http://127.0.0.1:8791/`；P2P 端口为 8800、8801。在 Alice 选择 Bob → **本机 P2P 测试**，发送消息；Bob 收到后可以回复。没有第三个中转服务。
@@ -33,14 +33,18 @@ Ctrl-C 停止双方并删除临时测试数据。永久身份、独立启动、�
 
 设备客户端不获得中心身份私钥或外部 ratchet。外部 Peer 只看到中心身份。详见 [设备同步](docs/device-sync.md) 和 [本机 UI](docs/local-ui.md)。
 
+## 改名与兼容
+
+项目名为 **CipherWhisper**，程序命令为 `cipherwhisper`。继续使用原数据目录和口令即可保留身份、历史、Peer 连接卡及加密会话。新环境变量为 `CIPHERWHISPER_PASSPHRASE`，也接受原 `TOPICAIRN_PASSPHRASE`；两者都设置时优先使用新变量。签名 domain separators 与本地密钥保险库 AAD 保留原 v1 字节，不随产品名变化；旧版端点和设备协议继续兼容。
+
 ## macOS 单文件
 
 ```sh
 ./scripts/package-macos.sh
-./dist/topicairn local-test --open
+./dist/cipherwhisper local-test --open
 ```
 
-产物 `dist/topicairn` 包含全部 UI 与功能，Universal arm64 + x86_64，最低 macOS 13，仅依赖系统库；用户不需安装 Rust/Node。打包生成 ad-hoc 签名、SHA-256 与附指南的 `dist/topicairn-macos-universal.tar.gz`，没有 Apple 公证。
+产物 `dist/cipherwhisper` 包含全部 UI 与功能，Universal arm64 + x86_64，最低 macOS 13，仅依赖系统库；用户不需安装 Rust/Node。打包生成 ad-hoc 签名、SHA-256 与附指南的 `dist/cipherwhisper-macos-universal.tar.gz`，没有 Apple 公证。
 
 `serve` 默认直接 P2P。旧 Relay 适配器保留为显式可选兼容模式：只有指定 `serve --relay <URL>` 才启用；不会默认启动或自动回退。旧方式见 [可选 Relay 指南](docs/macos-testing.md)。Federation、群聊、附件、账号恢复仍未实现。
 
@@ -72,7 +76,7 @@ npm --prefix apps/local-ui run test:browser
 | `crates/core` | 加密会话、密钥保险库、SQLite、直连传输、本地队列、同步日志和设备副本 |
 | `server/domain` | 中心/客户端模式、loopback 管理 API/UI、独立 P2P 与设备监听 |
 | `apps/local-ui` | Svelte UI、安全 Markdown/LaTeX/代码渲染与浏览器测试 |
-| `apps/topicairn` | 统一单文件入口、两个实例测试、TLS 证书生成 |
+| `apps/cipherwhisper` | 统一单文件入口、两个实例测试、TLS 证书生成 |
 | `apps/cli` | 中心端点无界面管理工具 |
 | `server/relay` | 显式可选的旧密文中转适配器 |
 

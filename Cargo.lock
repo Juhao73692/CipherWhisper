@@ -2331,7 +2331,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "topicairn"
+name = "cipherwhisper"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -2343,16 +2343,16 @@ dependencies = [
  "serde_json",
  "time",
  "tokio",
- "topicairn-cli",
- "topicairn-domain",
- "topicairn-protocol",
- "topicairn-relay",
+ "cipherwhisper-cli",
+ "cipherwhisper-domain",
+ "cipherwhisper-protocol",
+ "cipherwhisper-relay",
  "uuid",
  "zeroize",
 ]
 
 [[package]]
-name = "topicairn-cli"
+name = "cipherwhisper-cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -2360,13 +2360,13 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
- "topicairn-core",
- "topicairn-protocol",
+ "cipherwhisper-core",
+ "cipherwhisper-protocol",
  "zeroize",
 ]
 
 [[package]]
-name = "topicairn-core"
+name = "cipherwhisper-core"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -2385,15 +2385,15 @@ dependencies = [
  "sha2",
  "tempfile",
  "tokio",
- "topicairn-protocol",
- "topicairn-relay",
+ "cipherwhisper-protocol",
+ "cipherwhisper-relay",
  "uuid",
  "vodozemac",
  "zeroize",
 ]
 
 [[package]]
-name = "topicairn-domain"
+name = "cipherwhisper-domain"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -2407,13 +2407,13 @@ dependencies = [
  "serde_json",
  "subtle",
  "tokio",
- "topicairn-core",
- "topicairn-protocol",
+ "cipherwhisper-core",
+ "cipherwhisper-protocol",
  "zeroize",
 ]
 
 [[package]]
-name = "topicairn-protocol"
+name = "cipherwhisper-protocol"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -2426,7 +2426,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "topicairn-relay"
+name = "cipherwhisper-relay"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -2437,7 +2437,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
- "topicairn-protocol",
+ "cipherwhisper-protocol",
 ]
 
 [[package]]

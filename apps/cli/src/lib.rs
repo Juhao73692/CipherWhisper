@@ -1,12 +1,12 @@
 use anyhow::{Result, ensure};
+use cipherwhisper_core::Endpoint;
+use cipherwhisper_protocol::ContactCard;
 use clap::{Parser, Subcommand};
 use std::{io::Read, path::PathBuf};
-use topicairn_core::Endpoint;
-use topicairn_protocol::ContactCard;
 use zeroize::Zeroizing;
 
 #[derive(Parser)]
-#[command(about = "Topicairn headless Trust Domain administration", version)]
+#[command(about = "CipherWhisper headless Trust Domain administration", version)]
 pub struct AdminArgs {
     #[arg(long, default_value = "domain-data")]
     pub data: PathBuf,
@@ -18,7 +18,7 @@ pub struct AdminArgs {
     pub relay_ca: Option<PathBuf>,
     #[arg(
         long,
-        env = "TOPICAIRN_PASSPHRASE",
+        env = cipherwhisper_core::passphrase_env(),
         hide_env_values = true,
         hide = true
     )]
@@ -114,7 +114,8 @@ pub async fn run(args: AdminArgs) -> Result<()> {
         Command::AddPeer { card } => {
             let data: serde_json::Value = serde_json::from_slice(&std::fs::read(card)?)?;
             let id = if data.get("identity").is_some() {
-                let profile: topicairn_protocol::p2p::PeerProfile = serde_json::from_value(data)?;
+                let profile: cipherwhisper_protocol::p2p::PeerProfile =
+                    serde_json::from_value(data)?;
                 let id = profile.identity.user_id.clone();
                 domain.add_direct_peer(profile)?;
                 id
@@ -157,7 +158,7 @@ pub async fn run(args: AdminArgs) -> Result<()> {
             } else {
                 let mut text = String::new();
                 std::io::stdin()
-                    .take((topicairn_protocol::MAX_BODY + 1) as u64)
+                    .take((cipherwhisper_protocol::MAX_BODY + 1) as u64)
                     .read_to_string(&mut text)?;
                 text
             };
