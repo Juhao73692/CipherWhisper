@@ -517,6 +517,14 @@ kbd {
 .peer-item.active {
   background: #3a4a4e;
 }
+.unread-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: #dc514a;
+}
 .avatar {
   width: 34px;
   height: 34px;
@@ -538,6 +546,7 @@ kbd {
 }
 .peer-copy {
   min-width: 0;
+  flex: 1;
 }
 .peer-copy strong {
   display: block;
@@ -655,6 +664,7 @@ kbd {
 }
 .topic-item {
   display: flex;
+  align-items: center;
   width: 100%;
   gap: 11px;
   text-align: left;
@@ -679,8 +689,9 @@ kbd {
 .topic-item.active .topic-symbol {
   color: var(--accent);
 }
-.topic-item > span:last-child {
+.topic-item .topic-copy {
   min-width: 0;
+  flex: 1;
 }
 .topic-item strong {
   font-size: 13px;

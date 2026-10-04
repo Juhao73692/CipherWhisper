@@ -82,6 +82,18 @@ impl Workspace {
             Self::Client(e) => e.messages(id),
         }
     }
+    pub(crate) fn unread(&self) -> Result<Vec<cipherwhisper_core::unread::UnreadTopic>> {
+        match self {
+            Self::Center(e) => e.unread(),
+            Self::Client(e) => e.unread(),
+        }
+    }
+    pub(crate) fn mark_read(&self, id: &str, through: &str) -> Result<()> {
+        match self {
+            Self::Center(e) => e.mark_read(id, through),
+            Self::Client(e) => e.mark_read(id, through),
+        }
+    }
     pub(crate) fn search(&self, q: &str) -> Result<Vec<Message>> {
         match self {
             Self::Center(e) => e.search(q),

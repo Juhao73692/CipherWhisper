@@ -533,6 +533,12 @@ impl Replica {
         Ok(s.query_map([peer], topic_row)?
             .collect::<rusqlite::Result<Vec<_>>>()?)
     }
+    pub fn unread(&self) -> Result<Vec<crate::unread::UnreadTopic>> {
+        crate::unread::summary(&self.db, &self.pairing()?.domain.user_id)
+    }
+    pub fn mark_read(&self, topic: &str, through: &str) -> Result<()> {
+        crate::unread::mark_read(&self.db, &self.pairing()?.domain.user_id, topic, through)
+    }
     fn queued_messages(&self) -> Result<Vec<Message>> {
         let mut stmt = self
             .db

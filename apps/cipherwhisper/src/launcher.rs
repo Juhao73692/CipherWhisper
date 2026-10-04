@@ -683,6 +683,7 @@ fn api_path(path: &str) -> bool {
         "/identity"
             | "/peers"
             | "/topics"
+            | "/unread"
             | "/search"
             | "/sync"
             | "/outbox"
@@ -856,6 +857,7 @@ pub async fn run(args: Args) -> Result<()> {
         "/identity",
         "/peers",
         "/topics",
+        "/unread",
         "/search",
         "/sync",
         "/outbox",

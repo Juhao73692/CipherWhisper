@@ -221,6 +221,25 @@ async fn update_topic(
 async fn history(State(state): State<AppState>, Path(id): Path<String>) -> Api<Vec<Message>> {
     Ok(Json(state.domain.lock().await.messages(&id)?))
 }
+async fn unread(
+    State(state): State<AppState>,
+) -> Api<Vec<cipherwhisper_core::unread::UnreadTopic>> {
+    Ok(Json(state.domain.lock().await.unread()?))
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReadPosition {
+    through: String,
+}
+async fn mark_read(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(input): Json<ReadPosition>,
+) -> Api<Vec<cipherwhisper_core::unread::UnreadTopic>> {
+    let domain = state.domain.lock().await;
+    domain.mark_read(&id, &input.through)?;
+    Ok(Json(domain.unread()?))
+}
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SendMessage {
@@ -467,6 +486,8 @@ async fn serve_workspace(
         .route("/topics", get(topics).post(create_topic))
         .route("/topics/{id}", post(update_topic))
         .route("/topics/{id}/messages", get(history).post(send))
+        .route("/topics/{id}/read", post(mark_read))
+        .route("/unread", get(unread))
         .route("/search", get(search))
         .route("/sync", post(sync))
         .route("/outbox", get(outbox))

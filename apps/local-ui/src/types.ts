@@ -31,6 +31,12 @@ export type Message = {
   replyTo?: string | null;
   delivery: 'queued' | 'sent' | 'delivered' | 'received' | 'failed' | 'paused';
 };
+export type UnreadTopic = {
+  topicId: string;
+  peerId: string;
+  count: number;
+  lastMessageId: string;
+};
 export type Report = {
   sent: number;
   received: number;

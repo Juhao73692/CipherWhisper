@@ -18,6 +18,7 @@
     Pairing,
     LauncherStatus,
     BuildInfo,
+    UnreadTopic,
   } from './types';
   let buildInfo = $state<BuildInfo | null>(null);
   let unlocked = $state(false),
@@ -35,6 +36,8 @@
     peers = $state<Card[]>([]),
     topics = $state<Topic[]>([]),
     messages = $state<Message[]>([]);
+  let unread = $state<UnreadTopic[]>([]);
+  const reading = new Set<string>();
   let peerId = $state(''),
     topicId = $state(''),
     draft = $state(''),
@@ -112,8 +115,12 @@
   }
   let activePeer = $derived(peers.find((p) => p.user_id === peerId));
   let activeTopic = $derived(topics.find((t) => t.id === topicId));
+  let unreadTopicIds = $derived(new Set(unread.map((item) => item.topicId)));
+  let unreadPeerIds = $derived(new Set(unread.map((item) => item.peerId)));
   let visibleTopics = $derived(
-    topics.filter((t) => t.peerId === peerId && (includeArchived || !t.archived)),
+    topics.filter(
+      (t) => t.peerId === peerId && (includeArchived || !t.archived || unreadTopicIds.has(t.id)),
+    ),
   );
   let draftsBytes = $derived(new TextEncoder().encode(draft).length);
   let issue = $derived(
@@ -151,6 +158,7 @@
     peers = [];
     topics = [];
     messages = [];
+    unread = [];
     outbox = [];
     status = null;
     peerId = '';
@@ -255,11 +263,12 @@
         ? historyElement.scrollHeight - historyElement.scrollTop - historyElement.clientHeight < 100
         : true;
     try {
-      const [p, t, s, o] = await Promise.all([
+      const [p, t, s, o, u] = await Promise.all([
         api<Card[]>('/peers'),
         api<Topic[]>('/topics'),
         api<Status>('/status'),
         api<Outbox[]>('/outbox'),
+        api<UnreadTopic[]>('/unread'),
       ]);
       const routes =
         s.transport === 'direct'
@@ -268,6 +277,7 @@
       if (!unlocked) return;
       peers = p;
       topics = t;
+      unread = u;
       status = s;
       peerRoutes = routes;
       outbox = o;
@@ -282,6 +292,7 @@
         if (unlocked && topicId === chosen) {
           messages = history;
           if (bottom) await scrollBottom();
+          await markVisibleRead(chosen, history);
         }
       }
     } catch (e) {
@@ -292,6 +303,28 @@
   }
   function saveDraft() {
     if (topicId) drafts[topicId] = { body: draft, reply };
+  }
+  async function markVisibleRead(id: string, history: Message[]) {
+    const last = unread.find((item) => item.topicId === id)?.lastMessageId;
+    if (!last || reading.has(id) || !history.some((message) => message.id === last)) return;
+    await tick();
+    if (!unlocked || topicId !== id || pane !== 'conversation' || modal || document.hidden) return;
+    const element = document.getElementById(`message-${last}`);
+    if (!element || !historyElement) return;
+    const bounds = element.getBoundingClientRect();
+    const viewport = historyElement.getBoundingClientRect();
+    if (bounds.top >= viewport.bottom || bounds.bottom <= viewport.top) return;
+    reading.add(id);
+    try {
+      const updated = await api<UnreadTopic[]>(`/topics/${encodeURIComponent(id)}/read`, {
+        through: last,
+      });
+      if (unlocked) unread = updated;
+    } catch (e) {
+      connectionError = e instanceof Error ? e.message : String(e);
+    } finally {
+      reading.delete(id);
+    }
   }
   function selectPeer(id: string) {
     saveDraft();
@@ -319,6 +352,7 @@
       if (unlocked && topicId === id) {
         messages = history;
         await scrollBottom();
+        await markVisibleRead(id, history);
       }
     } catch (e) {
       fail(e);
@@ -688,8 +722,13 @@
     const timer = setInterval(() => {
       if (!document.hidden) void refresh();
     }, 500);
+    const visible = () => {
+      if (!document.hidden) void refresh();
+    };
+    document.addEventListener('visibilitychange', visible);
     return () => {
       clearInterval(timer);
+      document.removeEventListener('visibilitychange', visible);
       window.removeEventListener('cipherwhisper:locked', locked);
       setToken('');
     };
@@ -781,7 +820,12 @@
               class="peer-copy"
               ><strong>{peer.label || '未命名联系人'}</strong><small>{short(peer.user_id)}</small
               ></span
-            ><span class="peer-arrow">›</span></button
+            >{#if unreadPeerIds.has(peer.user_id)}<span
+                class="unread-dot"
+                role="img"
+                aria-label="有未读消息"
+                title="有未读消息"
+              ></span>{/if}<span class="peer-arrow">›</span></button
           >
         {/each}
         {#if !peers.length}<div class="empty-peers">
@@ -848,11 +892,16 @@
             class="topic-item"
             class:active={topicId === topic.id}
             onclick={() => selectTopic(topic.id)}
-            ><span class="topic-symbol">{topic.archived ? '□' : '#'}</span><span
+            ><span class="topic-symbol">{topic.archived ? '□' : '#'}</span><span class="topic-copy"
               ><strong>{topic.title}</strong><small
                 >{topic.archived ? '已归档 · ' : ''}{date(topic.updatedAt)}</small
               ></span
-            ></button
+            >{#if unreadTopicIds.has(topic.id)}<span
+                class="unread-dot"
+                role="img"
+                aria-label="有未读消息"
+                title="有未读消息"
+              ></span>{/if}</button
           >
         {/each}
         {#if !visibleTopics.length}<div class="empty-topics">
@@ -928,7 +977,11 @@
             >
           </div>
         </header>
-        <div class="history" bind:this={historyElement}>
+        <div
+          class="history"
+          bind:this={historyElement}
+          onscroll={() => void markVisibleRead(topicId, messages)}
+        >
           {#if !messages.length}<div class="empty-conversation">
               <span>✧</span>
               <h2>给这个话题写下第一句。</h2>

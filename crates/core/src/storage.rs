@@ -51,6 +51,19 @@ pub fn open(dir: &Path) -> Result<(Connection, File)> {
     CREATE TRIGGER IF NOT EXISTS messages_insert AFTER INSERT ON messages BEGIN INSERT INTO messages_fts(rowid,body) VALUES(new.rowid,new.body); END;
     CREATE TRIGGER IF NOT EXISTS messages_delete AFTER DELETE ON messages BEGIN INSERT INTO messages_fts(messages_fts,rowid,body) VALUES('delete',old.rowid,old.body); END;
     CREATE TRIGGER IF NOT EXISTS messages_update AFTER UPDATE OF body ON messages BEGIN INSERT INTO messages_fts(messages_fts,rowid,body) VALUES('delete',old.rowid,old.body); INSERT INTO messages_fts(rowid,body) VALUES(new.rowid,new.body); END;")?;
+    let has_read_positions: bool = db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='ui_topic_reads')",
+        [],
+        |row| row.get(0),
+    )?;
+    if !has_read_positions {
+        let tx = db.transaction()?;
+        // Existing history predates unread tracking. Start with it read; new
+        // messages in either centers or replicas will advance beyond this baseline.
+        tx.execute_batch("CREATE TABLE ui_topic_reads(topic_id TEXT PRIMARY KEY REFERENCES topics(id),last_rowid INTEGER NOT NULL);
+            INSERT INTO ui_topic_reads SELECT topic_id,MAX(rowid) FROM messages GROUP BY topic_id;")?;
+        tx.commit()?;
+    }
     let indexed: bool = db.query_row(
         "SELECT EXISTS(SELECT 1 FROM metadata WHERE key='search-index' AND value='trigram-v1')",
         [],

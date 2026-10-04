@@ -4,6 +4,7 @@ pub mod direct;
 pub mod domain_sync;
 mod storage;
 pub mod transport;
+pub mod unread;
 mod vault;
 use anyhow::{Result, ensure};
 use argon2::{Algorithm, Argon2, Params, Version};
@@ -315,6 +316,12 @@ impl Endpoint {
     }
     pub fn contact_card(&self) -> Result<ContactCard> {
         Ok(serde_json::from_str(&metadata(&self.db, "card")?)?)
+    }
+    pub fn unread(&self) -> Result<Vec<unread::UnreadTopic>> {
+        unread::summary(&self.db, &self.contact_card()?.user_id)
+    }
+    pub fn mark_read(&self, topic: &str, through: &str) -> Result<()> {
+        unread::mark_read(&self.db, &self.contact_card()?.user_id, topic, through)
     }
     pub fn add_peer(&mut self, card: ContactCard) -> Result<()> {
         card.validate()?;
