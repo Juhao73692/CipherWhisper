@@ -22,12 +22,16 @@ else
   cargo build --release --locked -p cipherwhisper --target x86_64-apple-darwin
 fi
 mkdir -p dist
-lipo -create "target/aarch64-apple-darwin/$package_profile/cipherwhisper" "target/x86_64-apple-darwin/$package_profile/cipherwhisper" -output dist/cipherwhisper
-chmod 755 dist/cipherwhisper
-codesign --force --sign - --identifier org.cipherwhisper.server dist/cipherwhisper
-codesign --verify --strict dist/cipherwhisper
+# Replace executables with fresh files. Rewriting a previously executed inode can
+# leave macOS's code-signature cache rejecting the new program on its first run.
+lipo -create "target/aarch64-apple-darwin/$package_profile/cipherwhisper" "target/x86_64-apple-darwin/$package_profile/cipherwhisper" -output dist/cipherwhisper.new
+chmod 755 dist/cipherwhisper.new
+codesign --force --sign - --identifier org.cipherwhisper.server dist/cipherwhisper.new
+codesign --verify --strict dist/cipherwhisper.new
+mv -f dist/cipherwhisper.new dist/cipherwhisper
 mkdir -p dist/CipherWhisper.app/Contents/MacOS
-cp dist/cipherwhisper dist/CipherWhisper.app/Contents/MacOS/cipherwhisper-runtime
+cp dist/cipherwhisper dist/CipherWhisper.app/Contents/MacOS/cipherwhisper-runtime.new
+mv -f dist/CipherWhisper.app/Contents/MacOS/cipherwhisper-runtime.new dist/CipherWhisper.app/Contents/MacOS/cipherwhisper-runtime
 cp apps/cipherwhisper/launch-macos.sh dist/CipherWhisper.app/Contents/MacOS/CipherWhisper
 chmod 755 dist/CipherWhisper.app/Contents/MacOS/CipherWhisper
 cp apps/cipherwhisper/Info.plist dist/CipherWhisper.app/Contents/Info.plist
