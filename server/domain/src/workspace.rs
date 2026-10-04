@@ -111,6 +111,12 @@ impl Workspace {
             Self::Client(e) => e.outbox(),
         }
     }
+    pub(crate) async fn retry_outbox(&mut self, id: &str) -> Result<Message> {
+        match self {
+            Self::Center(e) => e.retry_outbox(id).await,
+            Self::Client(e) => e.retry_outbox(id).await,
+        }
+    }
     pub(crate) fn mode(&self) -> &'static str {
         match self {
             Self::Center(_) => "server",

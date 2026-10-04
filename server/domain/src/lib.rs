@@ -24,7 +24,7 @@ use zeroize::Zeroizing;
 mod client;
 mod device_server;
 mod peer_server;
-mod ui;
+pub mod ui;
 mod workspace;
 use cipherwhisper_protocol::device::{DeviceCard, Pairing};
 pub use client::{ClientArgs, DeviceInitArgs, init_device, run_client};
@@ -67,8 +67,8 @@ pub struct DomainArgs {
         hide = true
     )]
     pub passphrase: String,
-    #[arg(long, default_value = "5")]
-    pub sync_seconds: u64,
+    #[arg(long, default_value = "0.5")]
+    pub sync_seconds: f64,
     /// Open and unlock the embedded UI using a single-use, 90-second local link.
     #[arg(long)]
     pub open: bool,
@@ -258,6 +258,9 @@ async fn outbox(State(state): State<AppState>) -> Api<serde_json::Value> {
         serde_json::to_value(state.domain.lock().await.outbox()?).map_err(anyhow::Error::from)?,
     ))
 }
+async fn retry_outbox(State(state): State<AppState>, Path(id): Path<String>) -> Api<Message> {
+    Ok(Json(state.domain.lock().await.retry_outbox(&id).await?))
+}
 async fn status(State(state): State<AppState>) -> Json<serde_json::Value> {
     let workspace = state.domain.lock().await;
     Json(
@@ -429,7 +432,7 @@ pub async fn run(args: DomainArgs) -> Result<()> {
 async fn serve_workspace(
     data: PathBuf,
     bind: std::net::SocketAddr,
-    sync_seconds: u64,
+    sync_seconds: f64,
     open: bool,
     domain: Workspace,
     remote: Option<Remote>,
@@ -440,8 +443,8 @@ async fn serve_workspace(
         "management API/UI are loopback only; use the separate HTTPS device listener"
     );
     ensure!(
-        (1..=300).contains(&sync_seconds),
-        "sync interval must be 1..300 seconds"
+        sync_seconds.is_finite() && (0.25..=300.0).contains(&sync_seconds),
+        "sync interval must be 0.25..300 seconds"
     );
     let token = token(&data)?;
     let listener = tokio::net::TcpListener::bind(bind).await?;
@@ -467,6 +470,7 @@ async fn serve_workspace(
         .route("/search", get(search))
         .route("/sync", post(sync))
         .route("/outbox", get(outbox))
+        .route("/outbox/{id}/retry", post(retry_outbox))
         .route("/status", get(status))
         .route("/p2p/contact", get(peer_profile))
         .route("/p2p/peers", get(peer_routes).post(import_direct_peer))
@@ -478,6 +482,7 @@ async fn serve_workspace(
         .layer(DefaultBodyLimit::max(MAX_BODY * 8))
         .layer(middleware::from_fn_with_state(state.clone(), authenticate))
         .route("/ui/session", post(ui::session))
+        .route("/ui/build", get(ui::build))
         .fallback(get(ui::assets))
         .layer(middleware::from_fn_with_state(state.clone(), ui::guard))
         .with_state(state.clone());
@@ -516,7 +521,7 @@ async fn serve_workspace(
     let signal_shutdown = shutdown.clone();
     let signal_handle = handle.clone();
     let worker = tokio::spawn(async move {
-        let mut interval = tokio::time::interval(Duration::from_secs(sync_seconds));
+        let mut interval = tokio::time::interval(Duration::from_secs_f64(sync_seconds));
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             tokio::select! {

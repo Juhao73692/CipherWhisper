@@ -20,5 +20,7 @@ __pycache__/
 server-key.pem
 
 /artifacts/
+/.build-info.lock
+/.build-info-state.json
 /apps/local-ui/test-results/
 /apps/local-ui/playwright-report/

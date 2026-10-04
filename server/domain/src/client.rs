@@ -40,8 +40,8 @@ pub struct ClientArgs {
     pub trust_domain: Option<String>,
     #[arg(long, default_value = "127.0.0.1:8790")]
     pub bind: SocketAddr,
-    #[arg(long, default_value = "5")]
-    pub sync_seconds: u64,
+    #[arg(long, default_value = "0.5")]
+    pub sync_seconds: f64,
     #[arg(long)]
     pub open: bool,
     #[arg(

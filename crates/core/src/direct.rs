@@ -252,7 +252,7 @@ impl Endpoint {
         for job in self
             .outbox()?
             .into_iter()
-            .filter(|j| force || j.next_attempt <= now())
+            .filter(|j| !j.retry_paused && (force || j.next_attempt <= now()))
             .take(100)
         {
             let env: Envelope = serde_json::from_str(&self.db.query_row(
@@ -280,9 +280,12 @@ impl Endpoint {
                 )
                 .await
             };
+            let result = result.and_then(|delivery| {
+                ensure!(delivery.id == env.id, "peer delivery ID mismatch");
+                Ok(delivery)
+            });
             match result {
                 Ok(delivery) => {
-                    ensure!(delivery.id == env.id, "peer delivery ID mismatch");
                     self.finish_delivery(&env.id, delivery.acknowledged)?;
                     if delivery.acknowledged {
                         report.delivered += 1;
@@ -292,8 +295,7 @@ impl Endpoint {
                 }
                 Err(e) => {
                     unavailable.insert(env.to);
-                    let delay = 2_i64.pow((job.attempts + 1).min(8) as u32);
-                    self.db.execute("UPDATE outbox SET accepted=0,attempts=attempts+1,next_attempt=?,last_error=? WHERE id=?",params![now()+delay,e.to_string(),env.id])?;
+                    self.fail_delivery(&env.id, job.attempts, &e.to_string())?;
                     report.errors.push(format!("outbox {}: {e}", env.id));
                 }
             }

@@ -1,6 +1,10 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte';
   import Markdown from './Markdown.svelte';
+  import Setup from './Setup.svelte';
+  import Settings from './Settings.svelte';
+  import About from './About.svelte';
+  import Brand from './Brand.svelte';
   import { api, setToken } from './api';
   import type {
     Card,
@@ -12,11 +16,18 @@
     DeviceStatus,
     Pending,
     Pairing,
+    LauncherStatus,
+    BuildInfo,
   } from './types';
+  let buildInfo = $state<BuildInfo | null>(null);
   let unlocked = $state(false),
     busy = $state(false),
     sending = $state(false),
     refreshing = $state(false);
+  let launcherEnabled = $state(false),
+    launcherConfigured = $state(false);
+  let exited = $state(false);
+  let launcherState = $state<LauncherStatus | null>(null);
   let tokenInput = $state(''),
     error = $state(''),
     notice = $state('');
@@ -34,7 +45,17 @@
     outbox = $state<Outbox[]>([]),
     connectionError = $state('');
   let modal = $state<
-    'peer' | 'topic' | 'rename' | 'identity' | 'peerIdentity' | 'search' | 'devices' | null
+    | 'peer'
+    | 'topic'
+    | 'rename'
+    | 'identity'
+    | 'peerIdentity'
+    | 'search'
+    | 'devices'
+    | 'settings'
+    | 'about'
+    | 'archive'
+    | null
   >(null);
   let cardText = $state(''),
     topicTitle = $state(''),
@@ -97,8 +118,10 @@
   let draftsBytes = $derived(new TextEncoder().encode(draft).length);
   let issue = $derived(
     connectionError ||
-      status?.lastSync?.errors[0] ||
-      outbox.find((o) => o.lastError)?.lastError ||
+      status?.lastSync?.errors.find(
+        (e) => !outbox.some((o) => o.retryPaused && e.includes(o.id)),
+      ) ||
+      outbox.find((o) => !o.retryPaused && o.lastError)?.lastError ||
       '',
   );
   const delivery: Record<string, string> = {
@@ -107,6 +130,7 @@
     delivered: '对方已接收',
     received: '已接收',
     failed: '中心拒绝',
+    paused: '发送失败',
   };
   const date = (n: number) =>
     new Date(n * 1000).toLocaleString('zh-CN', {
@@ -120,6 +144,7 @@
     error = e instanceof Error ? e.message : String(e);
   };
   function lock() {
+    tokenInput = '';
     setToken('');
     unlocked = false;
     self = null;
@@ -144,6 +169,7 @@
     deviceEnabled = false;
     deviceText = '';
     pendingOps = [];
+    launcherState = null;
   }
   async function unlock(token: string) {
     if (busy) return;
@@ -151,12 +177,71 @@
     error = '';
     setToken(token.trim());
     try {
+      if (launcherEnabled) {
+        launcherState = await api<LauncherStatus>('/launcher');
+        launcherConfigured = !!launcherState.config;
+        if (!launcherState.running) return;
+      }
       self = await api<Card>('/identity');
       unlocked = true;
       tokenInput = '';
       await refresh();
     } catch (e) {
       setToken('');
+      fail(e);
+    } finally {
+      busy = false;
+    }
+  }
+  async function launchReady(state: LauncherStatus) {
+    launcherState = state;
+    launcherConfigured = !!state.config;
+    self = await api<Card>('/identity');
+    unlocked = true;
+    await refresh();
+  }
+  async function passwordUnlock() {
+    if (busy) return;
+    busy = true;
+    error = '';
+    try {
+      const r = await fetch('/ui/unlock', {
+        method: 'POST',
+        credentials: 'omit',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ passphrase: tokenInput }),
+      });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.error || '无法解锁工作区');
+      tokenInput = '';
+      busy = false;
+      await unlock(data.token);
+    } catch (e) {
+      fail(e);
+    } finally {
+      busy = false;
+    }
+  }
+  async function closeWorkspace() {
+    if (busy) return;
+    busy = true;
+    try {
+      await api('/launcher/stop', {});
+      lock();
+    } catch (e) {
+      fail(e);
+    } finally {
+      busy = false;
+    }
+  }
+  async function quitApp() {
+    if (busy) return;
+    busy = true;
+    try {
+      await api('/launcher/quit', {});
+      lock();
+      exited = true;
+    } catch (e) {
       fail(e);
     } finally {
       busy = false;
@@ -273,6 +358,29 @@
       sending = false;
     }
   }
+  async function resend(message: Message) {
+    if (sending || !activeTopic || activeTopic.archived) return;
+    sending = true;
+    error = '';
+    try {
+      const job = outbox.find((o) => o.messageId === message.id && o.retryPaused);
+      if (job) {
+        await api<Message>(`/outbox/${encodeURIComponent(job.id)}/retry`, {});
+      } else if (clientMode) {
+        // A paused center message can also be resent from an associated device.
+        await api<Message>(`/topics/${encodeURIComponent(message.topicId)}/messages`, {
+          body: message.body,
+          reply_to: message.replyTo,
+        });
+      } else throw new Error('消息状态已更新，请稍后重试。');
+      await refresh();
+      await scrollBottom();
+    } catch (e) {
+      fail(e);
+    } finally {
+      sending = false;
+    }
+  }
   async function sync() {
     if (busy) return;
     busy = true;
@@ -301,6 +409,13 @@
     if (value === 'devices') {
       deviceText = '';
       void loadDevices();
+    }
+    if (value === 'settings') {
+      void api<LauncherStatus>('/launcher')
+        .then((s) => {
+          launcherState = s;
+        })
+        .catch(fail);
     }
   }
   async function importPeer() {
@@ -520,19 +635,45 @@
       error = '本机授权已失效，请重新解锁。';
     };
     window.addEventListener('cipherwhisper:locked', locked);
+    void fetch('/ui/build', { credentials: 'omit', cache: 'no-store' })
+      .then(async (response) => {
+        if (response.ok) buildInfo = await response.json();
+      })
+      .catch(() => {
+        /* Older runtimes may not expose build information. */
+      });
     const hash = new URLSearchParams(location.hash.slice(1));
     const code = hash.get('bootstrap');
     history.replaceState(null, '', location.pathname);
-    if (code) {
-      busy = true;
-      fetch('/ui/session', {
+    busy = true;
+    void (async () => {
+      try {
+        const discovery = await fetch('/ui/launcher', { credentials: 'omit', cache: 'no-store' });
+        if (discovery.ok) {
+          const data = await discovery.json();
+          launcherEnabled = data.enabled === true;
+          launcherConfigured = data.configured === true;
+        }
+      } catch {
+        /* Existing serve/connect runtimes have no launcher endpoint. */
+      }
+      if (!code) {
+        busy = false;
+        return;
+      }
+      await fetch('/ui/session', {
         method: 'POST',
         credentials: 'omit',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ code }),
       })
         .then(async (r) => {
-          if (!r.ok) throw new Error('自动解锁链接已过期或已使用，请输入本机管理令牌。');
+          if (!r.ok)
+            throw new Error(
+              launcherEnabled
+                ? '启动链接已过期或已使用。已有工作区可输入口令解锁；首次配置请重新打开软件。'
+                : '自动解锁链接已过期或已使用，请输入本机管理令牌。',
+            );
           return r.json();
         })
         .then(async (r) => {
@@ -543,10 +684,10 @@
           busy = false;
           fail(e);
         });
-    }
+    })();
     const timer = setInterval(() => {
       if (!document.hidden) void refresh();
-    }, 5000);
+    }, 500);
     return () => {
       clearInterval(timer);
       window.removeEventListener('cipherwhisper:locked', locked);
@@ -555,50 +696,59 @@
   });
 </script>
 
-{#if !unlocked}
-  <main class="unlock-page">
-    <div class="unlock-brand">
-      <span class="brand-mark">◒</span> CipherWhisper <span class="eyebrow">PRIVATE P2P CHAT</span>
+{#if modal === 'about'}
+  <About {buildInfo} onback={() => (modal = null)} />
+{:else if launcherState && !launcherState.running}
+  <main class="unlock-page setup-page">
+    <Brand {buildInfo} startup onabout={() => (modal = 'about')} />
+    <div class="unlock-card setup-card">
+      <Setup initial={launcherState} onready={launchReady} />
     </div>
+  </main>
+{:else if !unlocked}
+  <main class="unlock-page">
+    <Brand {buildInfo} startup onabout={() => (modal = 'about')} />
     <section class="unlock-card">
       <span class="eyebrow accent">LOCAL WORKSPACE</span>
       <h1>让对话，<br />有自己的话题。</h1>
-      <p>
-        连接你的{clientMode
-          ? '本设备历史副本'
-          : '本机可信域中心'}。使用本机工作区查看联系人、话题和消息历史。
-      </p>
-      <form
-        onsubmit={(e) => {
-          e.preventDefault();
-          void unlock(tokenInput);
-        }}
-      >
-        <label for="token">本机管理令牌</label><input
-          id="token"
-          type="password"
-          bind:value={tokenInput}
-          autocomplete="off"
-          spellcheck="false"
-          placeholder="粘贴数据目录中的 admin.token"
-          required
-          maxlength="64"
-        />
-        <button class="primary full" disabled={busy || tokenInput.trim().length !== 64}
-          >{busy ? '正在连接…' : '解锁本机工作区 →'}</button
+      {#if exited}<p class="notice" role="status">
+          软件已退出，身份和历史已保留。可以关闭页面；再次打开 CipherWhisper 即可继续。
+        </p>
+      {:else}<form
+          onsubmit={(e) => {
+            e.preventDefault();
+            if (launcherEnabled) void passwordUnlock();
+            else void unlock(tokenInput);
+          }}
         >
-      </form>
+          <label for="token">{launcherEnabled ? '工作区口令' : '本机管理令牌'}</label><input
+            id="token"
+            type="password"
+            bind:value={tokenInput}
+            autocomplete="off"
+            spellcheck="false"
+            placeholder={launcherEnabled
+              ? '输入创建工作区时设置的口令'
+              : '粘贴数据目录中的 admin.token'}
+            required
+            maxlength={launcherEnabled ? 1024 : 64}
+          />
+          <button
+            class="primary full"
+            disabled={busy ||
+              (launcherEnabled
+                ? !launcherConfigured || !tokenInput
+                : tokenInput.trim().length !== 64)}
+            >{busy ? '正在连接…' : '解锁本机工作区 →'}</button
+          >
+        </form>{/if}
       {#if error}<p class="error" role="alert">{error}</p>{/if}
-      <p class="hint">
-        使用 <code>cipherwhisper serve … --open</code> 可自动打开并解锁。授权只保存在当前页面内存中。
-      </p>
+      {#if launcherEnabled && !launcherConfigured}<p class="hint">
+          首次配置请打开 CipherWhisper 软件。
+        </p>{/if}
     </section>
     <div class="unlock-foot">
-      你的身份。你的历史。你的可信域。 <a
-        href="/third-party-ui.txt"
-        target="_blank"
-        rel="noopener noreferrer">开源许可</a
-      >
+      <a href="/third-party-ui.txt" target="_blank" rel="noopener noreferrer">开源许可</a>
     </div>
   </main>
 {:else}
@@ -610,9 +760,7 @@
     class:mobile-conversation={pane === 'conversation'}
   >
     <aside class="peer-panel">
-      <div class="brand">
-        <span class="brand-mark">◒</span><span>CipherWhisper<small>PRIVATE BY DESIGN</small></span>
-      </div>
+      <Brand {buildInfo} onabout={() => (modal = 'about')} />
       <button class="search-trigger" onclick={() => openModal('search')}
         ><span>⌕</span> 搜索本机消息 <kbd>FTS</kbd></button
       >
@@ -642,20 +790,34 @@
             >
           </div>{/if}
       </div>
-      <button class="devices-trigger" onclick={() => openModal('devices')}
-        >{clientMode ? '◇ 设备同步与队列' : '◇ 域内设备管理'}</button
-      >
-      <div class="domain-note">
-        <span class="small-dot"></span>{clientMode ? '本设备历史副本' : '本机可信域中心'}
-        <p>
-          {clientMode ? '与中心通过加密连接同步' : '外部传输端到端加密'}<br />本机保存解密后的消息
-        </p>
+      <div class="sidebar-footer">
+        <section class="sidebar-system" aria-label="设备与连接">
+          <div class="domain-note">
+            <span class="small-dot"></span>{clientMode ? '本机为关联设备' : '本机为可信域中心'}
+          </div>
+          {#if launcherEnabled}<button class="devices-trigger" onclick={() => openModal('settings')}
+              >⚙ 连接与证书设置</button
+            >{/if}
+          <button class="devices-trigger" onclick={() => openModal('devices')}
+            >{clientMode ? '◇ 设备同步与队列' : '◇ 域内设备管理'}</button
+          >
+        </section>
+        <button class="self-card" aria-label="用户设置" onclick={() => openModal('identity')}>
+          <span class="avatar self">{(self?.label || '我').slice(0, 1)}</span><span
+            ><strong>{self?.label || '我的身份'}</strong><small>用户设置</small></span
+          ><span>⚙</span>
+        </button>
+        {#if launcherEnabled}<div class="session-actions">
+            <button class="text-button" aria-label="退出软件" disabled={busy} onclick={quitApp}
+              >退出</button
+            ><button
+              class="text-button"
+              aria-label="关闭工作区"
+              disabled={busy}
+              onclick={closeWorkspace}>关闭</button
+            >
+          </div>{/if}
       </div>
-      <button class="self-card" onclick={() => openModal('identity')}
-        ><span class="avatar self">{(self?.label || '我').slice(0, 1)}</span><span
-          ><strong>{self?.label || '我的身份'}</strong><small>身份卡与完整指纹</small></span
-        ><span>⚙</span></button
-      >
     </aside>
     <aside class="topic-panel">
       <div class="topic-heading">
@@ -708,11 +870,13 @@
       <div class="sync-box">
         <div>
           <span class="small-dot" class:warning={!!issue}></span><span
-            >{issue ? '同步需要关注' : '自动刷新 · 每 5 秒'}</span
+            >{issue ? '同步需要关注' : '就绪'}</span
           ><button class="icon" aria-label="立即同步" disabled={busy} onclick={sync}>↻</button>
         </div>
-        <small>{outbox.length ? `${outbox.length} 个投递任务` : '本机历史已持久化'}</small
-        >{#if issue}<p class="sync-error">{issue}</p>{/if}
+        {#if outbox.some((o) => !o.retryPaused)}<small
+            >{outbox.filter((o) => !o.retryPaused).length} 个投递任务</small
+          >{/if}
+        {#if issue}<p class="sync-error">{issue}</p>{/if}
       </div>
     </aside>
     <main class="conversation-panel">
@@ -726,32 +890,48 @@
               {activePeer?.label} <span>/</span>
               {activeTopic.archived ? 'ARCHIVED' : 'CONVERSATION'}
             </div>
-            <h1>{activeTopic.title}</h1>
+            <div class="title-editable">
+              <button
+                class="icon hover-action"
+                aria-label="重命名话题"
+                title="重命名话题"
+                onclick={() => openModal('rename')}
+                ><svg
+                  viewBox="0 0 24 24"
+                  width="17"
+                  height="17"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.6"
+                  aria-hidden="true"
+                  ><path d="m15 4 5 5M4 20l4-1L20 7a2.8 2.8 0 0 0-4-4L4 15z" /></svg
+                ></button
+              >
+              <h1>{activeTopic.title}</h1>
+            </div>
           </div>
           <div class="header-actions">
             <span class="secure-badge">◇ E2EE</span><button
-              class="icon"
-              aria-label="重命名话题"
-              onclick={() => openModal('rename')}>✎</button
-            ><button
-              class="icon"
+              class="archive-action"
               aria-label={activeTopic.archived ? '恢复话题' : '归档话题'}
               disabled={busy}
-              onclick={() => updateTopic(!activeTopic!.archived)}
-              >{activeTopic.archived ? '↥' : '□'}</button
+              onclick={() => (activeTopic!.archived ? updateTopic(false) : openModal('archive'))}
+              ><svg
+                viewBox="0 0 24 24"
+                width="18"
+                height="18"
+                aria-hidden="true"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.6"><path d="M3 4h18v4H3zM5 8v12h14V8M9 12h6" /></svg
+              >{activeTopic.archived ? '恢复' : '归档'}</button
             >
           </div>
         </header>
         <div class="history" bind:this={historyElement}>
-          <div class="conversation-intro">
-            <span class="intro-line"></span><span>独立话题 · 消息以 Markdown 源文传输</span><span
-              class="intro-line"
-            ></span>
-          </div>
           {#if !messages.length}<div class="empty-conversation">
               <span>✧</span>
               <h2>给这个话题写下第一句。</h2>
-              <p>支持公式、代码和那些值得展开的想法。</p>
             </div>{/if}
           {#each messages as message (message.id)}
             <article
@@ -795,6 +975,15 @@
                   >
                 </div>
               </div>
+              {#if message.delivery === 'paused' && message.senderId === self?.user_id}
+                <button
+                  class="resend-message"
+                  aria-label="重新发送消息"
+                  title="发送失败，点击作为新消息重新发送"
+                  disabled={sending || activeTopic.archived}
+                  onclick={() => resend(message)}>!</button
+                >
+              {/if}
             </article>
           {/each}
         </div>
@@ -826,9 +1015,7 @@
                 </div>{/if}
               <div class="editor-tabs">
                 <button class:active={!preview} onclick={() => (preview = false)}>编写</button
-                ><button class:active={preview} onclick={() => (preview = true)}>预览</button><span
-                  >MARKDOWN · LaTeX · CODE</span
-                >
+                ><button class:active={preview} onclick={() => (preview = true)}>预览</button>
               </div>
               {#if preview}<div class="draft-preview">
                   {#if draft}<Markdown source={draft} />{:else}<p class="hint">
@@ -838,7 +1025,7 @@
                   aria-label="消息正文"
                   bind:this={editor}
                   bind:value={draft}
-                  placeholder="写下你的想法… 支持 $公式$ 和代码块"
+                  placeholder="写下你的想法…"
                   onkeydown={(e) => {
                     if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
                       e.preventDefault();
@@ -857,9 +1044,6 @@
                 >
               </div>
             </div>{/if}
-          <p class="composer-note">
-            ◇ {clientMode ? '设备连接加密 · 历史从中心同步' : '可信域中心之间端到端加密'} · 本机搜索与渲染
-          </p>
         </div>
       {:else}
         <div class="workspace-empty">
@@ -885,7 +1069,7 @@
   </div>
 {/if}
 
-{#if modal && unlocked}
+{#if modal && modal !== 'about' && unlocked}
   <div
     class="modal-backdrop"
     role="presentation"
@@ -910,8 +1094,10 @@
               peer: '添加联系人',
               topic: '新建话题',
               rename: '重命名话题',
-              identity: '我的可信域身份',
+              identity: '我的身份',
+              archive: '归档话题',
               peerIdentity: '联系人身份',
+              settings: '连接与证书设置',
               search: '搜索本机消息',
               devices: clientMode ? '设备同步' : '域内设备管理',
             }[modal]}
@@ -921,7 +1107,24 @@
           >×</button
         >
       </div>
-      {#if modal === 'peer'}
+      {#if modal === 'archive'}
+        <p>归档“{activeTopic?.title}”？</p>
+        <p class="hint">归档后将收起此话题，消息会保留。可以在“显示已归档话题”中恢复。</p>
+        <div class="modal-buttons">
+          <button class="secondary" disabled={busy} onclick={() => (modal = null)}>取消</button
+          ><button class="primary" disabled={busy} onclick={() => updateTopic(true)}
+            >确认归档</button
+          >
+        </div>
+      {:else if modal === 'settings' && launcherState?.config}
+        <Settings
+          initial={launcherState}
+          onready={async (s) => {
+            await launchReady(s);
+            if (s.config?.role === 'device') modal = null;
+          }}
+        />
+      {:else if modal === 'peer'}
         <p>
           交换公开身份卡，并通过可信渠道核对完整 user_id 指纹。卡片自签名不等同于你已经核实了对方。
         </p>
@@ -949,7 +1152,7 @@
           >
         </form>
       {:else if modal === 'topic' || modal === 'rename'}
-        <p>与 {activePeer?.label} 的一段独立对话。标题和话题信息通过加密事件传输。</p>
+        <p>与 {activePeer?.label} 的一段独立对话。</p>
         <form
           onsubmit={(e) => {
             e.preventDefault();
@@ -962,7 +1165,7 @@
             bind:value={topicTitle}
             required
             maxlength="256"
-            placeholder="例如：数学、NAS、项目讨论"
+            placeholder="例如：周末计划、晚饭吃什么、旅行安排"
           /><button class="primary full" disabled={busy || !topicTitle.trim()}
             >{busy ? '保存中…' : modal === 'topic' ? '创建话题' : '保存标题'}</button
           >
@@ -984,7 +1187,6 @@
           <code>{card.curve_key}</code>
         </div>
         {#if directMode}
-          <p>直接 P2P：交换 .peer.json 连接卡，其中包含签名身份、地址及公开 CA。无需 Relay。</p>
           {#if modal === 'peerIdentity'}
             <code
               >{peerRoutes.find((r) => r.identity.user_id === card.user_id)?.endpoint ||
@@ -1078,17 +1280,39 @@
                 >{busy ? '授权中…' : '授权设备并下载配对文件'}</button
               >
             </form>
+          {:else if launcherEnabled}<div class="notice">
+              设备连接尚未开启。在「连接与证书设置」勾选允许自己的其他设备连接，保存后即可授权设备。
+            </div>
+            <button class="secondary" onclick={() => openModal('settings')}>打开连接设置</button>
           {:else}<div class="notice">
               设备监听尚未开启。请用 --device-bind、设备 TLS 证书及 --device-url
               配置重启中心；本机管理界面仍只监听 loopback。
             </div>{/if}
           <h3 class="device-section-title">已授权设备 · {deviceRecords.length}</h3>
           <div class="device-records">
-            {#each deviceRecords as device (device.card.id)}<article>
+            {#each deviceRecords as device (device.card.id)}<article class="device-record">
                 <div class="device-row">
-                  <strong>{device.card.label}</strong><small
-                    >{device.revoked ? '已撤销' : '已授权'}</small
-                  >
+                  <div class="title-editable">
+                    {#if !device.revoked}<button
+                        class="icon hover-action device-revoke"
+                        aria-label="撤销设备"
+                        title="撤销设备"
+                        disabled={busy}
+                        onclick={() => revokeDevice(device.card.id)}
+                        ><svg
+                          viewBox="0 0 24 24"
+                          width="17"
+                          height="17"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="1.6"
+                          aria-hidden="true"
+                          ><circle cx="12" cy="12" r="8" /><path d="M8 12h8" /></svg
+                        ></button
+                      >{/if}
+                    <strong>{device.card.label}</strong>
+                  </div>
+                  <small>{device.revoked ? '已撤销' : '已授权'}</small>
                 </div>
                 <code>{device.card.id}</code>
                 <p>
@@ -1096,16 +1320,10 @@
                     ? `最近连接 ${date(device.lastSeen)}`
                     : '尚未连接'}
                 </p>
-                {#if !device.revoked}<button
-                    class="secondary"
-                    disabled={busy}
-                    onclick={() => revokeDevice(device.card.id)}>撤销设备</button
-                  >{/if}
               </article>{/each}
           </div>
         {/if}
       {:else if modal === 'search'}
-        <p>只检索这台计算机的 SQLite 历史，搜索词保留在本机。</p>
         <form
           class="search-form"
           onsubmit={(e) => {

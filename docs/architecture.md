@@ -19,7 +19,7 @@ Alice center <-> direct authenticated E2EE <-> Bob center
 
 ## 事务与崩溃恢复
 
-发送事务：加载持久化 session → 在临时 session 上 encrypt → 保存新 session + 完整不可变 Envelope + 本地消息 → SQLite commit。网络发送发生在提交之后。失败重试复用完全相同的 Envelope，不重新 encrypt。
+发送事务：加载持久化 session → 在临时 session 上 encrypt → 保存新 session + 完整不可变 Envelope + 本地消息 → SQLite commit。网络发送发生在提交之后。自动失败重试复用完全相同的 Envelope，不重新 encrypt；连续失败 10 次后暂停并持久化此状态，强制同步不会绕过上限。用户点击失败消息的红色感叹号时，会从保留的正文和回复目标创建新的消息、Envelope 和发送时间，原失败消息继续保留且不恢复自动投递。
 
 接收事务：验证固定 Peer 签名和收件人 → 从已保存状态加载临时 account/session → decrypt → 校验 Payload 与外层路由绑定 → 校验 Topic 所属、消息 ID、reply → 保存新 account/session + 消息 + 接收去重记录 + 待 ACK → commit。之后才能签名返回 `acknowledged:true`。旧 Relay 模式则在提交后向 Relay ACK。
 

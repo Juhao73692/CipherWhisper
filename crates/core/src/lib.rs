@@ -55,11 +55,16 @@ pub struct SyncReport {
 #[serde(rename_all = "camelCase")]
 pub struct OutboxStatus {
     pub id: String,
+    pub message_id: Option<String>,
     pub accepted: bool,
     pub attempts: i64,
     pub next_attempt: i64,
     pub last_error: Option<String>,
+    pub retry_paused: bool,
+    pub retry_limit: Option<i64>,
 }
+/// Consecutive failed delivery requests before explicit user retry is required.
+pub const MAX_DELIVERY_FAILURES: i64 = 10;
 
 fn load_account(db: &Connection, key: &[u8; 32]) -> Result<Account> {
     let pickle: String =
@@ -300,6 +305,7 @@ impl Endpoint {
         }
         set_metadata(&db, "local-role", "center")?;
         domain_sync::initialize(&mut db)?;
+        db.execute("UPDATE messages SET delivery='paused' WHERE delivery IN ('queued','sent') AND id IN (SELECT message_id FROM outbox WHERE attempts>=?)", [MAX_DELIVERY_FAILURES])?;
         Ok(Self {
             db,
             key,
@@ -708,19 +714,43 @@ impl Endpoint {
     }
     pub fn outbox(&self) -> Result<Vec<OutboxStatus>> {
         let mut stmt = self.db.prepare(
-            "SELECT id,accepted,attempts,next_attempt,last_error FROM outbox ORDER BY rowid",
+            "SELECT id,accepted,attempts,next_attempt,last_error,message_id FROM outbox ORDER BY rowid",
         )?;
         Ok(stmt
             .query_map([], |r| {
+                let message_id: Option<String> = r.get(5)?;
                 Ok(OutboxStatus {
                     id: r.get(0)?,
                     accepted: r.get(1)?,
                     attempts: r.get(2)?,
                     next_attempt: r.get(3)?,
                     last_error: r.get(4)?,
+                    retry_paused: message_id.is_some()
+                        && r.get::<_, i64>(2)? >= MAX_DELIVERY_FAILURES,
+                    retry_limit: message_id.as_ref().map(|_| MAX_DELIVERY_FAILURES),
+                    message_id,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+    /// A manual resend is a new message; the original remains locally paused.
+    pub async fn retry_outbox(&mut self, id: &str) -> Result<Message> {
+        let message = self.db.query_row(
+            "SELECT m.* FROM messages m JOIN outbox o ON o.message_id=m.id WHERE o.id=? AND o.attempts>=?",
+            params![id, MAX_DELIVERY_FAILURES], message_row,
+        )?;
+        self.send_message(&message.topic_id, &message.body, message.reply_to)
+            .await
+    }
+    fn fail_delivery(&mut self, id: &str, attempts: i64, error: &str) -> Result<()> {
+        let delay = 2_i64.pow((attempts + 1).min(8) as u32);
+        let tx = self.db.transaction()?;
+        tx.execute("UPDATE outbox SET accepted=0,attempts=attempts+1,next_attempt=?,last_error=? WHERE id=?", params![now()+delay,error,id])?;
+        if attempts + 1 >= MAX_DELIVERY_FAILURES {
+            tx.execute("UPDATE messages SET delivery='paused' WHERE id=(SELECT message_id FROM outbox WHERE id=?)", [id])?;
+        }
+        tx.commit()?;
+        Ok(())
     }
     fn finish_delivery(&mut self, id: &str, acknowledged: bool) -> Result<()> {
         let tx = self.db.transaction()?;
@@ -738,8 +768,8 @@ impl Endpoint {
             tx.execute("DELETE FROM outbox WHERE id=?", [id])?;
         } else {
             tx.execute(
-                "UPDATE outbox SET accepted=1,last_error=NULL,next_attempt=? WHERE id=?",
-                params![now() + 5, id],
+                "UPDATE outbox SET accepted=1,attempts=0,last_error=NULL,next_attempt=? WHERE id=?",
+                params![now() + 1, id],
             )?;
         }
         tx.commit()?;
@@ -760,7 +790,7 @@ impl Endpoint {
         let jobs = self.outbox()?;
         for job in jobs
             .into_iter()
-            .filter(|j| force || j.next_attempt <= now())
+            .filter(|j| !j.retry_paused && (force || j.next_attempt <= now()))
         {
             let env: Envelope = serde_json::from_str(&self.db.query_row(
                 "SELECT envelope FROM outbox WHERE id=?",
@@ -774,9 +804,12 @@ impl Endpoint {
                 self.request("POST", "/messages", serde_json::to_vec(&env)?)
                     .await
             };
+            let result = result.and_then(|delivery| {
+                ensure!(delivery.id == job.id, "relay delivery id mismatch");
+                Ok(delivery)
+            });
             match result {
                 Ok(delivery) => {
-                    ensure!(delivery.id == job.id, "relay delivery id mismatch");
                     self.finish_delivery(&job.id, delivery.acknowledged)?;
                     if delivery.acknowledged {
                         report.delivered += 1;
@@ -786,8 +819,7 @@ impl Endpoint {
                 }
                 Err(e) => {
                     // A restarted/replaced relay may have lost the item: resubmit the same ciphertext.
-                    let delay = 2_i64.pow((job.attempts + 1).min(8) as u32);
-                    self.db.execute("UPDATE outbox SET accepted=0,attempts=attempts+1,next_attempt=?,last_error=? WHERE id=?",params![now()+delay,e.to_string(),job.id])?;
+                    self.fail_delivery(&job.id, job.attempts, &e.to_string())?;
                     report.errors.push(format!("outbox {}: {e}", job.id));
                     break;
                 }

@@ -18,3 +18,8 @@ getrandom = "0.4"
 hex.workspace = true
 axum-server.workspace = true
 rustls.workspace = true
+[build-dependencies]
+serde_json.workspace = true
+sha2.workspace = true
+fs2 = "0.4"
+time = { version = "0.3", features = ["formatting"] }

@@ -12,6 +12,8 @@ Bob devices   -- authenticated TLS 1.3 --> Bob center
 
 ## 一条命令测试两个实例
 
+日常使用可以双击发行包中的 **CipherWhisper.app**，全程在 UI 创建身份、设置口令、自动生成证书、导入联系人和配对自己的设备。后续地址、端口和证书变更也在「连接与证书设置」完成；无需填写启动参数。见 [纯 UI 配置指南](docs/ui-setup.md)。程序无参数启动也会打开配置向导。
+
 下载或构建同一个 macOS Universal 可执行文件，在它所在目录运行：
 
 ```sh
@@ -45,6 +47,8 @@ Ctrl-C 停止双方并删除临时测试数据。永久身份、独立启动、�
 ```
 
 产物 `dist/cipherwhisper` 包含全部 UI 与功能，Universal arm64 + x86_64，最低 macOS 13，仅依赖系统库；用户不需安装 Rust/Node。打包生成 ad-hoc 签名、SHA-256 与附指南的 `dist/cipherwhisper-macos-universal.tar.gz`，没有 Apple 公证。
+
+同一发行包包含可双击打开的 `dist/CipherWhisper.app`。配置默认保存到用户应用数据目录；原命令行功能继续保留。
 
 `serve` 默认直接 P2P。旧 Relay 适配器保留为显式可选兼容模式：只有指定 `serve --relay <URL>` 才启用；不会默认启动或自动回退。旧方式见 [可选 Relay 指南](docs/macos-testing.md)。Federation、群聊、附件、账号恢复仍未实现。
 

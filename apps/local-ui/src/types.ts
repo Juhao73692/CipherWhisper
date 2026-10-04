@@ -6,6 +6,13 @@ export type Card = {
   label: string;
   signature: string;
 };
+export type BuildInfo = {
+  number: string;
+  commit: string;
+  dirty: boolean;
+  builtAt: string;
+  debug: boolean;
+};
 export type Topic = {
   id: string;
   peerId: string;
@@ -22,7 +29,7 @@ export type Message = {
   body: string;
   format: 'markdown';
   replyTo?: string | null;
-  delivery: 'queued' | 'sent' | 'delivered' | 'received' | 'failed';
+  delivery: 'queued' | 'sent' | 'delivered' | 'received' | 'failed' | 'paused';
 };
 export type Report = {
   sent: number;
@@ -77,8 +84,33 @@ export type Status = {
 };
 export type Outbox = {
   id: string;
+  messageId: string | null;
+  retryPaused: boolean;
+  retryLimit: number | null;
   accepted: boolean;
   attempts: number;
   nextAttempt: number;
   lastError?: string | null;
+};
+export type NetworkConfig = {
+  host: string;
+  peerPort: number;
+  devices: boolean;
+  devicePort: number;
+};
+export type LauncherStatus = {
+  config: {
+    version: number;
+    role: 'center' | 'device';
+    name: string;
+    network: NetworkConfig;
+    certificate: string | null;
+    certificateCreated: number | null;
+  } | null;
+  running: boolean;
+  unlocked: boolean;
+  deviceCard: DeviceCard | null;
+  suggestedHost: string;
+  dataDirectory: string;
+  certificateExpires: number | null;
 };

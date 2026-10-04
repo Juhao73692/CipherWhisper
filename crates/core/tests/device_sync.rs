@@ -91,6 +91,77 @@ fn command(op: Operation) -> Command {
 }
 
 #[tokio::test]
+async fn device_retries_are_bounded_persisted_and_resend_with_new_ids() -> Result<()> {
+    let mut f = fixture()?;
+    let peer = f.bob.contact_card()?.user_id;
+    let topic = f.center.create_topic(&peer, "周末计划")?;
+    let mut r = client(&mut f, "retry-device")?;
+    pull(&mut f.center, &mut r, 100)?;
+    let original = r.send_message(&topic.id, "周六去散步", None).await?;
+    let job = r.pending()?.remove(0);
+    assert!(r.retry_outbox(&job.id).await.is_err());
+    for attempts in 1..=cipherwhisper_core::MAX_DELIVERY_FAILURES {
+        r.sync(true).await?;
+        let pending = r.pending()?.remove(0);
+        assert_eq!(pending.attempts, attempts);
+        assert_eq!(pending.operation, job.operation);
+        r.sync(false).await?;
+        assert_eq!(r.pending()?[0].attempts, attempts);
+    }
+    assert_eq!(r.messages(&topic.id)?[0].delivery, "paused");
+    r.sync(true).await?;
+    assert_eq!(
+        r.pending()?[0].attempts,
+        cipherwhisper_core::MAX_DELIVERY_FAILURES
+    );
+    drop(r);
+    let mut r = Replica::open(f.root.path().join("retry-device"), PASS, None)?;
+    assert!(r.pending()?[0].retry_paused);
+    let before = now();
+    let resent = r.retry_outbox(&job.id).await?;
+    assert_ne!(original.id, resent.id);
+    assert!(resent.timestamp >= before);
+    assert_eq!(resent.body, original.body);
+    assert_eq!(r.messages(&topic.id)?.len(), 2);
+    let new_job = r.pending()?.remove(1);
+    assert_ne!(new_job.id, job.id);
+    assert_eq!(new_job.attempts, 0);
+    let command = Command {
+        id: new_job.id,
+        operation: new_job.operation,
+    };
+    let result = f
+        .center
+        .device_command(&r.device_card()?.id, command.clone())
+        .await?;
+    r.apply_command_reply(&command, &result)?;
+    pull(&mut f.center, &mut r, 100)?;
+    assert_eq!(f.center.messages(&topic.id)?.len(), 1);
+    assert_eq!(f.center.messages(&topic.id)?[0].id, resent.id);
+    assert!(
+        r.messages(&topic.id)?
+            .iter()
+            .any(|m| m.id == original.id && m.delivery == "paused")
+    );
+    assert!(r.pending()?[0].retry_paused);
+    assert!(r.update_topic(&topic.id, "周末散步", false).await.is_err());
+    let metadata = r.pending()?.remove(1);
+    let db = Connection::open(f.root.path().join("retry-device/domain.sqlite"))?;
+    db.execute(
+        "UPDATE device_pending SET attempts=? WHERE id=?",
+        rusqlite::params![cipherwhisper_core::MAX_DELIVERY_FAILURES, metadata.id],
+    )?;
+    assert!(!r.pending()?[1].retry_paused);
+    assert_eq!(r.pending()?[1].retry_limit, None);
+    r.sync(true).await?;
+    assert_eq!(
+        r.pending()?[1].attempts,
+        cipherwhisper_core::MAX_DELIVERY_FAILURES + 1
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn paginated_sync_has_independent_cursors_and_exact_topic_history() -> Result<()> {
     let mut f = fixture()?;
     let peer = f.bob.contact_card()?.user_id;

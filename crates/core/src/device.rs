@@ -38,6 +38,10 @@ pub struct Pending {
     pub operation: Operation,
     pub state: String,
     pub error: Option<String>,
+    pub attempts: i64,
+    pub next_attempt: i64,
+    pub retry_paused: bool,
+    pub retry_limit: Option<i64>,
 }
 impl Replica {
     pub fn open(dir: impl AsRef<Path>, passphrase: &str, label: Option<&str>) -> Result<Self> {
@@ -106,6 +110,9 @@ impl Replica {
         }
         db.execute_batch("CREATE TABLE IF NOT EXISTS device_pending(id TEXT PRIMARY KEY,operation TEXT NOT NULL,state TEXT NOT NULL DEFAULT 'pending',attempts INTEGER NOT NULL DEFAULT 0,last_error TEXT,result TEXT,created_at INTEGER NOT NULL); CREATE TABLE IF NOT EXISTS replica_versions(kind TEXT NOT NULL,id TEXT NOT NULL,seq INTEGER NOT NULL,digest TEXT NOT NULL,PRIMARY KEY(kind,id)); CREATE TABLE IF NOT EXISTS replica_message_order(id TEXT PRIMARY KEY,seq INTEGER NOT NULL);
         INSERT OR IGNORE INTO replica_message_order SELECT id,seq FROM replica_versions WHERE kind='message';")?;
+        if !db.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('device_pending') WHERE name='next_attempt')", [], |r| r.get::<_, bool>(0))? {
+            db.execute_batch("ALTER TABLE device_pending ADD COLUMN next_attempt INTEGER NOT NULL DEFAULT 0;")?;
+        }
         let pair: Option<Pairing> = db
             .query_row(
                 "SELECT value FROM metadata WHERE key='device-pair'",
@@ -289,22 +296,30 @@ impl Replica {
         Ok(page.changes.len())
     }
     pub fn pending(&self) -> Result<Vec<Pending>> {
-        let mut stmt=self.db.prepare("SELECT id,operation,state,last_error FROM device_pending WHERE state<>'accepted' ORDER BY rowid")?;
+        let mut stmt=self.db.prepare("SELECT id,operation,state,last_error,attempts,next_attempt FROM device_pending WHERE state<>'accepted' ORDER BY rowid")?;
         stmt.query_map([], |r| {
             Ok((
                 r.get::<_, String>(0)?,
                 r.get::<_, String>(1)?,
                 r.get::<_, String>(2)?,
                 r.get::<_, Option<String>>(3)?,
+                r.get::<_, i64>(4)?,
+                r.get::<_, i64>(5)?,
             ))
         })?
         .map(|r| {
-            let (id, op, state, error) = r?;
+            let (id, op, state, error, attempts, next_attempt) = r?;
+            let operation: Operation = serde_json::from_str(&op)?;
+            let is_message = matches!(&operation, Operation::Send { .. });
             Ok(Pending {
                 id,
-                operation: serde_json::from_str(&op)?,
+                operation,
+                retry_paused: is_message && state == "pending" && attempts >= MAX_DELIVERY_FAILURES,
                 state,
                 error,
+                attempts,
+                next_attempt,
+                retry_limit: is_message.then_some(MAX_DELIVERY_FAILURES),
             })
         })
         .collect()
@@ -318,6 +333,23 @@ impl Replica {
             "only permanently rejected operations can be discarded; uncertain network outcomes must be retried"
         );
         Ok(())
+    }
+    pub async fn retry_outbox(&mut self, id: &str) -> Result<Message> {
+        let job = self
+            .pending()?
+            .into_iter()
+            .find(|job| job.id == id && job.retry_paused)
+            .ok_or_else(|| anyhow::anyhow!("只能重新发送已暂停的消息"))?;
+        let Operation::Send {
+            topic_id,
+            body,
+            reply_to,
+            ..
+        } = job.operation
+        else {
+            anyhow::bail!("此任务不是消息");
+        };
+        self.send_message(&topic_id, &body, reply_to).await
     }
     fn enqueue(&mut self, operation: Operation) -> Result<String> {
         let encoded = serde_json::to_string(&operation)?;
@@ -340,9 +372,15 @@ impl Replica {
         )?;
         Ok(id)
     }
-    async fn flush(&mut self, report: &mut SyncReport) -> Result<bool> {
+    async fn flush(&mut self, report: &mut SyncReport, force: bool) -> Result<()> {
         let jobs = self.pending()?;
-        for job in jobs.into_iter().filter(|j| j.state == "pending").take(100) {
+        for job in jobs
+            .into_iter()
+            .filter(|j| {
+                j.state == "pending" && !j.retry_paused && (force || j.next_attempt <= now())
+            })
+            .take(100)
+        {
             let command = Command {
                 id: job.id.clone(),
                 operation: job.operation,
@@ -354,9 +392,11 @@ impl Replica {
                     serde_json::to_vec(&command)?,
                 )
                 .await
-            {
-                Ok(reply) => {
+                .and_then(|reply| {
                     self.apply_command_reply(&command, &reply)?;
+                    Ok(reply)
+                }) {
+                Ok(reply) => {
                     match reply.result {
                         CommandResult::Accepted { .. } => report.sent += 1,
                         CommandResult::Rejected { error, .. } => report
@@ -366,15 +406,15 @@ impl Replica {
                 }
                 Err(e) => {
                     self.db.execute(
-                        "UPDATE device_pending SET attempts=attempts+1,last_error=? WHERE id=?",
-                        params![e.to_string(), command.id],
+                        "UPDATE device_pending SET attempts=attempts+1,next_attempt=?,last_error=? WHERE id=?",
+                        params![now()+2_i64.pow((job.attempts + 1).min(8) as u32), e.to_string(), command.id],
                     )?;
                     report.errors.push(format!("operation {}: {e}", command.id));
-                    return Ok(false);
+                    break;
                 }
             }
         }
-        Ok(true)
+        Ok(())
     }
     /// Called only after verifying a nonce-bound, center-signed HTTPS response.
     pub fn apply_command_reply(&mut self, command: &Command, reply: &CommandReply) -> Result<()> {
@@ -410,11 +450,9 @@ impl Replica {
         tx.commit()?;
         Ok(())
     }
-    pub async fn sync(&mut self, _force: bool) -> Result<SyncReport> {
+    pub async fn sync(&mut self, force: bool) -> Result<SyncReport> {
         let mut report = SyncReport::default();
-        if !self.flush(&mut report).await? {
-            return Ok(report);
-        }
+        self.flush(&mut report, force).await?;
         for _ in 0..100 {
             let cursor = self.cursor()?;
             let path = format!(
@@ -498,11 +536,17 @@ impl Replica {
     fn queued_messages(&self) -> Result<Vec<Message>> {
         let mut stmt = self
             .db
-            .prepare("SELECT operation,state FROM device_pending ORDER BY rowid")?;
+            .prepare("SELECT operation,state,attempts FROM device_pending ORDER BY rowid")?;
         let domain = &self.pairing()?.domain.user_id;
         let mut messages = Vec::new();
-        for r in stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))? {
-            let (raw, state) = r?;
+        for r in stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, i64>(2)?,
+            ))
+        })? {
+            let (raw, state, attempts) = r?;
             if let Operation::Send {
                 message_id,
                 topic_id,
@@ -521,6 +565,8 @@ impl Replica {
                     reply_to,
                     delivery: if state == "failed" {
                         "failed"
+                    } else if state == "pending" && attempts >= MAX_DELIVERY_FAILURES {
+                        "paused"
                     } else {
                         "queued"
                     }
@@ -673,17 +719,23 @@ impl Replica {
         })
     }
     pub fn outbox(&self) -> Result<Vec<OutboxStatus>> {
-        let mut s=self.db.prepare("SELECT id,attempts,last_error FROM device_pending WHERE state<>'accepted' ORDER BY rowid")?;
-        Ok(s.query_map([], |r| {
-            Ok(OutboxStatus {
-                id: r.get(0)?,
+        Ok(self
+            .pending()?
+            .into_iter()
+            .map(|job| OutboxStatus {
+                message_id: match &job.operation {
+                    Operation::Send { message_id, .. } => Some(message_id.clone()),
+                    _ => None,
+                },
+                id: job.id,
                 accepted: false,
-                attempts: r.get(1)?,
-                next_attempt: 0,
-                last_error: r.get(2)?,
+                attempts: job.attempts,
+                next_attempt: job.next_attempt,
+                last_error: job.error,
+                retry_paused: job.retry_paused,
+                retry_limit: job.retry_limit,
             })
-        })?
-        .collect::<rusqlite::Result<Vec<_>>>()?)
+            .collect())
     }
 }
 

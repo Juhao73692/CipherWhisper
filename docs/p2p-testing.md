@@ -4,6 +4,8 @@
 
 ## 一条命令打开两个测试实例
 
+日常跨电脑使用可以双击 CipherWhisper.app，在页面设置地址并自动生成证书，然后交换连接卡添加联系人。参见 [全程 UI 配置](ui-setup.md)。以下命令适合开发和自动化测试。
+
 ```sh
 ./cipherwhisper local-test --open
 ```

@@ -398,6 +398,123 @@ dependencies = [
 ]
 
 [[package]]
+name = "cipherwhisper"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "cipherwhisper-cli",
+ "cipherwhisper-core",
+ "cipherwhisper-domain",
+ "cipherwhisper-protocol",
+ "cipherwhisper-relay",
+ "clap",
+ "getrandom 0.4.3",
+ "hex",
+ "rcgen",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "subtle",
+ "time",
+ "tokio",
+ "uuid",
+ "zeroize",
+]
+
+[[package]]
+name = "cipherwhisper-cli"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "cipherwhisper-core",
+ "cipherwhisper-protocol",
+ "clap",
+ "serde",
+ "serde_json",
+ "tokio",
+ "zeroize",
+]
+
+[[package]]
+name = "cipherwhisper-core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "argon2",
+ "axum",
+ "axum-server",
+ "chacha20poly1305",
+ "cipherwhisper-protocol",
+ "cipherwhisper-relay",
+ "fs2",
+ "getrandom 0.4.3",
+ "hex",
+ "rcgen",
+ "reqwest",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "tokio",
+ "uuid",
+ "vodozemac",
+ "zeroize",
+]
+
+[[package]]
+name = "cipherwhisper-domain"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "axum-server",
+ "cipherwhisper-core",
+ "cipherwhisper-protocol",
+ "clap",
+ "fs2",
+ "getrandom 0.4.3",
+ "hex",
+ "rustls",
+ "serde",
+ "serde_json",
+ "sha2",
+ "subtle",
+ "time",
+ "tokio",
+ "zeroize",
+]
+
+[[package]]
+name = "cipherwhisper-protocol"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "hex",
+ "serde",
+ "serde_json",
+ "sha2",
+ "uuid",
+ "vodozemac",
+]
+
+[[package]]
+name = "cipherwhisper-relay"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "axum-server",
+ "cipherwhisper-protocol",
+ "clap",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "clap"
 version = "4.6.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2328,116 +2445,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1d38ac1cf9b95face32296c0a3ede1fdc270627c9d9c02a7274dd6d960dc4d56"
 dependencies = [
  "winnow",
-]
-
-[[package]]
-name = "cipherwhisper"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "getrandom 0.4.3",
- "hex",
- "rcgen",
- "reqwest",
- "serde_json",
- "time",
- "tokio",
- "cipherwhisper-cli",
- "cipherwhisper-domain",
- "cipherwhisper-protocol",
- "cipherwhisper-relay",
- "uuid",
- "zeroize",
-]
-
-[[package]]
-name = "cipherwhisper-cli"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "serde",
- "serde_json",
- "tokio",
- "cipherwhisper-core",
- "cipherwhisper-protocol",
- "zeroize",
-]
-
-[[package]]
-name = "cipherwhisper-core"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "argon2",
- "axum",
- "axum-server",
- "chacha20poly1305",
- "fs2",
- "getrandom 0.4.3",
- "hex",
- "rcgen",
- "reqwest",
- "rusqlite",
- "serde",
- "serde_json",
- "sha2",
- "tempfile",
- "tokio",
- "cipherwhisper-protocol",
- "cipherwhisper-relay",
- "uuid",
- "vodozemac",
- "zeroize",
-]
-
-[[package]]
-name = "cipherwhisper-domain"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "axum",
- "axum-server",
- "clap",
- "getrandom 0.4.3",
- "hex",
- "rustls",
- "serde",
- "serde_json",
- "subtle",
- "tokio",
- "cipherwhisper-core",
- "cipherwhisper-protocol",
- "zeroize",
-]
-
-[[package]]
-name = "cipherwhisper-protocol"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "hex",
- "serde",
- "serde_json",
- "sha2",
- "uuid",
- "vodozemac",
-]
-
-[[package]]
-name = "cipherwhisper-relay"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "axum",
- "axum-server",
- "clap",
- "rusqlite",
- "serde",
- "serde_json",
- "tokio",
- "cipherwhisper-protocol",
 ]
 
 [[package]]

@@ -1,4 +1,5 @@
 use clap::{Parser, Subcommand};
+mod launcher;
 mod local_test;
 mod tls;
 #[derive(Parser)]
@@ -9,10 +10,12 @@ mod tls;
 )]
 struct Args {
     #[command(subcommand)]
-    command: Command,
+    command: Option<Command>,
 }
 #[derive(Subcommand)]
 enum Command {
+    /// Configure and run a center or device entirely in the local browser UI.
+    Ui(launcher::Args),
     /// Start two temporary P2P chat instances, pair them, and optionally open both UIs.
     LocalTest(local_test::Args),
     /// Run an opaque ciphertext relay. Remote binds require TLS.
@@ -30,7 +33,11 @@ enum Command {
 }
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    match Args::parse().command {
+    match Args::parse()
+        .command
+        .unwrap_or_else(|| Command::Ui(launcher::Args::default()))
+    {
+        Command::Ui(args) => launcher::run(args).await,
         Command::LocalTest(args) => local_test::run(args).await,
         Command::Relay(args) => cipherwhisper_relay::run(args).await,
         Command::Serve(args) => cipherwhisper_domain::run(*args).await,

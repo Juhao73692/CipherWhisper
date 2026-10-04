@@ -18,8 +18,17 @@ use tokio::sync::Mutex;
 use zeroize::Zeroizing;
 include!(concat!(env!("OUT_DIR"), "/ui_assets.rs"));
 
+pub async fn build() -> Json<serde_json::Value> {
+    let mut info: serde_json::Value =
+        serde_json::from_str(include_str!(concat!(env!("OUT_DIR"), "/build-info.json")))
+            .expect("embedded build metadata");
+    info.as_object_mut().unwrap().remove("sourceDigest");
+    info["debug"] = serde_json::json!(cfg!(debug_assertions));
+    Json(info)
+}
+
 #[derive(Default)]
-pub(crate) struct BrowserAuth {
+pub struct BrowserAuth {
     bootstrap: Option<(String, Instant)>,
     session_digest: Option<String>,
 }
@@ -29,7 +38,7 @@ fn random_token() -> anyhow::Result<Zeroizing<String>> {
     Ok(Zeroizing::new(hex::encode(random.as_slice())))
 }
 impl BrowserAuth {
-    pub(crate) fn bootstrap(&mut self) -> anyhow::Result<Zeroizing<String>> {
+    pub fn bootstrap(&mut self) -> anyhow::Result<Zeroizing<String>> {
         let code = random_token()?;
         self.bootstrap = Some((
             digest(code.as_bytes()),
@@ -37,7 +46,7 @@ impl BrowserAuth {
         ));
         Ok(code)
     }
-    fn exchange(&mut self, code: &str) -> anyhow::Result<Option<Zeroizing<String>>> {
+    pub fn exchange(&mut self, code: &str) -> anyhow::Result<Option<Zeroizing<String>>> {
         let valid = self.bootstrap.as_ref().is_some_and(|(hash, expires)| {
             Instant::now() < *expires
                 && bool::from(digest(code.as_bytes()).as_bytes().ct_eq(hash.as_bytes()))
@@ -46,11 +55,14 @@ impl BrowserAuth {
             return Ok(None);
         }
         self.bootstrap = None;
+        Ok(Some(self.new_session()?))
+    }
+    pub fn new_session(&mut self) -> anyhow::Result<Zeroizing<String>> {
         let session = random_token()?;
         self.session_digest = Some(digest(session.as_bytes()));
-        Ok(Some(session))
+        Ok(session)
     }
-    pub(crate) fn accepts(&self, hash: &str) -> bool {
+    pub fn accepts(&self, hash: &str) -> bool {
         self.session_digest
             .as_ref()
             .is_some_and(|stored| bool::from(hash.as_bytes().ct_eq(stored.as_bytes())))
@@ -71,7 +83,7 @@ pub(crate) async fn session(State(state): State<AppState>, Json(input): Json<Unl
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }
 }
-pub(crate) async fn assets(request: Request) -> Response {
+pub async fn assets(request: Request) -> Response {
     let path = request.uri().path().trim_start_matches('/');
     let path = if path.is_empty() { "index.html" } else { path };
     match asset(path) {
@@ -79,7 +91,7 @@ pub(crate) async fn assets(request: Request) -> Response {
         None => StatusCode::NOT_FOUND.into_response(),
     }
 }
-fn trusted_request(headers: &HeaderMap, hosts: &[String]) -> bool {
+pub fn trusted_request(headers: &HeaderMap, hosts: &[String]) -> bool {
     let Some(host) = headers.get(header::HOST).and_then(|h| h.to_str().ok()) else {
         return false;
     };
@@ -109,6 +121,10 @@ pub(crate) async fn guard(State(state): State<AppState>, request: Request, next:
         )
             .into_response()
     };
+    protect_response(&mut response);
+    response
+}
+pub fn protect_response(response: &mut Response) {
     let headers = response.headers_mut();
     // Shiki and KaTeX require generated inline styles. Scripts/resources remain local.
     headers.insert(header::CONTENT_SECURITY_POLICY, "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; connect-src 'self'; img-src 'none'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'".parse().unwrap());
@@ -116,12 +132,11 @@ pub(crate) async fn guard(State(state): State<AppState>, request: Request, next:
     headers.insert(header::X_FRAME_OPTIONS, "DENY".parse().unwrap());
     headers.insert(header::REFERRER_POLICY, "no-referrer".parse().unwrap());
     headers.insert(header::CACHE_CONTROL, "no-store".parse().unwrap());
-    response
 }
 pub(crate) fn auth_state() -> Arc<Mutex<BrowserAuth>> {
     Arc::new(Mutex::new(BrowserAuth::default()))
 }
-pub(crate) fn open(url: &str) -> std::io::Result<()> {
+pub fn open(url: &str) -> std::io::Result<()> {
     #[cfg(target_os = "macos")]
     let status = std::process::Command::new("open").arg(url).status()?;
     #[cfg(target_os = "linux")]
