@@ -29,7 +29,7 @@ async function start(name: string): Promise<Instance> {
   const data = join(directory, name),
     capture = join(directory, `${name}-url`);
   await rm(capture, { force: true });
-  const process = spawn(binary, ['ui', '--data', data, '--bind', '127.0.0.1:0'], {
+  const process = spawn(binary, ['ui', '--browser', '--data', data, '--bind', '127.0.0.1:0'], {
     env: {
       ...globalThis.process.env,
       PATH: `${join(directory, 'bin')}:${globalThis.process.env.PATH}`,

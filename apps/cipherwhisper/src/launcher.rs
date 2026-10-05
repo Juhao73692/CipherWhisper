@@ -38,9 +38,12 @@ pub struct Args {
     pub data: Option<PathBuf>,
     #[arg(long, default_value = "127.0.0.1:8790")]
     pub bind: SocketAddr,
-    /// Run without opening the default browser (for supervised environments).
+    /// Run without a window or tray icon (for supervised environments).
     #[arg(long)]
     pub no_open: bool,
+    /// Open the default browser instead of a native window (development/testing).
+    #[arg(long, conflicts_with = "no_open")]
+    pub browser: bool,
 }
 impl Default for Args {
     fn default() -> Self {
@@ -48,6 +51,7 @@ impl Default for Args {
             data: None,
             bind: "127.0.0.1:8790".parse().unwrap(),
             no_open: false,
+            browser: false,
         }
     }
 }
@@ -162,6 +166,7 @@ struct Portal {
     runtime: Arc<Mutex<Runtime>>,
     http: reqwest::Client,
     shutdown: watch::Sender<bool>,
+    desktop: Option<crate::desktop::Handle>,
 }
 struct Error(String);
 impl IntoResponse for Error {
@@ -205,6 +210,7 @@ fn save(data: &Path, config: &Config) -> Result<()> {
     let result = (|| {
         write_private(&temp, &serde_json::to_vec_pretty(config)?)?;
         std::fs::rename(&temp, &path)?;
+        #[cfg(unix)]
         std::fs::File::open(data)?.sync_all()?;
         Ok(())
     })();
@@ -212,12 +218,26 @@ fn save(data: &Path, config: &Config) -> Result<()> {
     result
 }
 fn default_data() -> Result<PathBuf> {
-    let home = std::env::var_os("HOME").context("找不到用户数据目录")?;
-    #[cfg(target_os = "macos")]
-    let suffix = "Library/Application Support/CipherWhisper";
-    #[cfg(not(target_os = "macos"))]
-    let suffix = ".local/share/CipherWhisper";
-    Ok(PathBuf::from(home).join(suffix))
+    #[cfg(target_os = "windows")]
+    {
+        let base = std::env::var_os("LOCALAPPDATA")
+            .map(PathBuf::from)
+            .or_else(|| {
+                std::env::var_os("USERPROFILE")
+                    .map(|home| PathBuf::from(home).join("AppData/Local"))
+            })
+            .context("找不到用户数据目录")?;
+        Ok(base.join("CipherWhisper"))
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let home = std::env::var_os("HOME").context("找不到用户数据目录")?;
+        #[cfg(target_os = "macos")]
+        let suffix = "Library/Application Support/CipherWhisper";
+        #[cfg(not(target_os = "macos"))]
+        let suffix = ".local/share/CipherWhisper";
+        Ok(PathBuf::from(home).join(suffix))
+    }
 }
 fn suggest_host() -> String {
     // UDP connect chooses a route without transmitting a packet.
@@ -241,6 +261,8 @@ fn credentials(data: &Path, config: &mut Config) -> Result<()> {
 }
 async fn stop(running: &mut Option<Running>) -> Result<()> {
     if let Some(mut running) = running.take() {
+        #[cfg(target_os = "windows")]
+        running.child.start_kill()?;
         #[cfg(unix)]
         if let Some(pid) = running.child.id() {
             let _ = Command::new("/bin/kill")
@@ -267,6 +289,8 @@ async fn spawn_runtime(
     http: &reqwest::Client,
 ) -> Result<Running> {
     let mut command = Command::new(std::env::current_exe()?);
+    #[cfg(target_os = "windows")]
+    command.creation_flags(0x08000000); // CREATE_NO_WINDOW for background workers.
     command
         .arg(if config.role == Role::Center {
             "serve"
@@ -413,6 +437,10 @@ async fn quit(State(portal): State<Portal>) -> Api {
     Ok(Json(serde_json::json!({"ok": true})))
 }
 async fn open_window(State(portal): State<Portal>) -> Api {
+    if let Some(desktop) = &portal.desktop {
+        desktop.reopen()?;
+        return Ok(Json(serde_json::json!({"ok": true})));
+    }
     let code = portal.auth.lock().await.bootstrap()?;
     let url = Zeroizing::new(format!(
         "http://{}/#bootstrap={}",
@@ -742,8 +770,14 @@ async fn proxy(
         .into_response())
 }
 pub async fn run(args: Args) -> Result<()> {
+    run_with_window(args, None).await
+}
+pub async fn run_with_window(args: Args, desktop: Option<crate::desktop::Handle>) -> Result<()> {
     ensure!(args.bind.ip().is_loopback(), "配置界面只允许本机访问");
-    let data = args.data.unwrap_or(default_data()?);
+    let data = match args.data {
+        Some(data) => data,
+        None => default_data()?,
+    };
     ensure!(!data.is_symlink(), "data directory cannot be a symlink");
     std::fs::create_dir_all(&data)?;
     #[cfg(unix)]
@@ -821,10 +855,15 @@ pub async fn run(args: Args) -> Result<()> {
         std::fs::remove_file(&address_path)?;
     }
     write_private(&address_path, format!("http://{address}").as_bytes())?;
-    let (shutdown, mut closing) = watch::channel(false);
+    let shutdown = desktop
+        .as_ref()
+        .map(crate::desktop::Handle::shutdown)
+        .unwrap_or_else(|| watch::channel(false).0);
+    let mut closing = shutdown.subscribe();
     let portal = Portal {
         data: Arc::new(data),
         shutdown,
+        desktop,
         hosts: Arc::new(vec![
             address.to_string(),
             format!("localhost:{}", address.port()),
@@ -891,13 +930,19 @@ pub async fn run(args: Args) -> Result<()> {
     if !args.no_open {
         let code = portal.auth.lock().await.bootstrap()?;
         let url = Zeroizing::new(format!("http://{address}/#bootstrap={}", code.as_str()));
-        ui::open(&url).context("无法打开浏览器；请重新打开软件")?;
+        if let Some(desktop) = &portal.desktop {
+            desktop.open(url)?;
+        } else {
+            ui::open(&url).context("无法打开浏览器；请重新打开软件")?;
+        }
     }
     let served = axum::serve(listener, app)
         .with_graceful_shutdown(async move {
             tokio::select! {
                 _ = tokio::signal::ctrl_c() => {},
-                _ = closing.changed() => {},
+                _ = async {
+                    if !*closing.borrow() { let _ = closing.changed().await; }
+                } => {},
             }
         })
         .await;
@@ -910,6 +955,37 @@ pub async fn run(args: Args) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn configuration_can_be_saved_and_replaced() -> Result<()> {
+        let data =
+            std::env::temp_dir().join(format!("cipherwhisper-config-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&data)?;
+        let result = (|| {
+            let mut config = Config {
+                version: 1,
+                role: Role::Center,
+                name: "Windows-compatible workspace".into(),
+                network: Network {
+                    host: "localhost".into(),
+                    peer_port: 8800,
+                    device_port: 8802,
+                    devices: false,
+                },
+                certificate: None,
+                certificate_created: None,
+            };
+            save(&data, &config)?;
+            config.network.peer_port = 8900;
+            save(&data, &config)?;
+            let saved: Config =
+                serde_json::from_slice(&std::fs::read(data.join("ui-config.json"))?)?;
+            assert_eq!(saved.network.peer_port, 8900);
+            assert_eq!(std::fs::read_dir(&data)?.count(), 1);
+            Ok(())
+        })();
+        std::fs::remove_dir_all(data)?;
+        result
+    }
     #[test]
     fn network_rejects_urls_wildcards_and_duplicate_ports() {
         let mut network = Network {

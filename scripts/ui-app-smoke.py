@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise the packaged Finder launcher without touching the user's workspace."""
+"""Exercise the packaged launcher in browser mode without touching user data."""
 import json
 import os
 from pathlib import Path
@@ -26,11 +26,13 @@ def main():
         capture = folder / "url"
         data = folder / "workspace"
         env = {**os.environ, "PATH": f"{mock}:{os.environ['PATH']}", "CIPHERWHISPER_CAPTURE_URL": str(capture)}
-        command = [str(APP), "ui", "--data", str(data), "--bind", "127.0.0.1:0"]
+        command = [str(APP), "ui", "--browser", "--data", str(data), "--bind", "127.0.0.1:0"]
+        processes = []
 
         def launch():
             capture.unlink(missing_ok=True)
-            subprocess.run(command, env=env, check=True, timeout=5)
+            process = subprocess.Popen(command, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            processes.append(process)
             for _ in range(200):
                 if capture.exists() and capture.read_text():
                     return capture.read_text()
@@ -72,6 +74,8 @@ def main():
             assert request("/p2p/contact")["endpoint"] == f"https://localhost:{port}"
         finally:
             request("/launcher/quit", {})
+            for process in processes:
+                process.wait(timeout=20)
             for _ in range(200):
                 try:
                     request("/ui/launcher")

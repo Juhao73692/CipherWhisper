@@ -3,6 +3,18 @@ name = "cipherwhisper"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+default-run = "cipherwhisper"
+
+[[bin]]
+name = "cipherwhisper"
+path = "src/main.rs"
+
+[[bin]]
+name = "cipherwhisper-desktop"
+path = "src/bin/cipherwhisper-desktop.rs"
+test = false
+bench = false
+
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
@@ -23,3 +35,9 @@ uuid.workspace = true
 serde.workspace = true
 axum.workspace = true
 subtle = "2"
+
+[target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
+tao = "0.37.1"
+wry = "0.57.0"
+tray-icon = "0.26.0"
+rfd = "0.17.2"

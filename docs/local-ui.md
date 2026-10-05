@@ -1,6 +1,6 @@
 # 本机 UI 与消息渲染
 
-本机 UI 与管理 API 一起嵌入 `cipherwhisper`，在浏览器中运行，只允许 loopback 监听。`serve` 从中心读取历史；`connect` 从本机设备副本读取历史，由 Rust 后台使用独立设备密钥和认证 TLS 1.3 从中心拉取。两个中心默认直接 P2P，继续使用 Olm 3DH / Double Ratchet 端到端加密。浏览器无需直接访问任何远程服务。
+本机 UI 与管理 API 一起嵌入 `cipherwhisper`，默认在应用内的系统 WebView 窗口中运行；本地服务只允许 loopback 监听。关闭窗口后后台继续接收消息，可通过 macOS 菜单栏或 Windows 系统托盘图标重新打开。`serve` 从中心读取历史；`connect` 从本机设备副本读取历史，由 Rust 后台使用独立设备密钥和认证 TLS 1.3 从中心拉取。两个中心默认直接 P2P，继续使用 Olm 3DH / Double Ratchet 端到端加密。UI 无需直接访问任何远程服务。`ui --browser` 和命令行 `serve --open` 保留浏览器模式。
 
 ## 开始使用
 

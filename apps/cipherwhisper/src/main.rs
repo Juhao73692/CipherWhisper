@@ -1,4 +1,5 @@
 use clap::{Parser, Subcommand};
+mod desktop;
 mod launcher;
 mod local_test;
 mod tls;
@@ -14,7 +15,7 @@ struct Args {
 }
 #[derive(Subcommand)]
 enum Command {
-    /// Configure and run a center or device entirely in the local browser UI.
+    /// Configure and run a center or device in the app window and system tray.
     Ui(launcher::Args),
     /// Start two temporary P2P chat instances, pair them, and optionally open both UIs.
     LocalTest(local_test::Args),
@@ -31,19 +32,30 @@ enum Command {
     /// Generate private test TLS credentials and a public CA for peer or device servers.
     TlsInit(tls::TlsArgs),
 }
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    match Args::parse()
+fn main() -> anyhow::Result<()> {
+    let command = Args::parse()
         .command
-        .unwrap_or_else(|| Command::Ui(launcher::Args::default()))
+        .unwrap_or_else(|| Command::Ui(launcher::Args::default()));
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    if let Command::Ui(args) = &command
+        && !args.no_open
+        && !args.browser
     {
-        Command::Ui(args) => launcher::run(args).await,
-        Command::LocalTest(args) => local_test::run(args).await,
-        Command::Relay(args) => cipherwhisper_relay::run(args).await,
-        Command::Serve(args) => cipherwhisper_domain::run(*args).await,
-        Command::DeviceInit(args) => cipherwhisper_domain::init_device(args),
-        Command::Connect(args) => cipherwhisper_domain::run_client(args).await,
-        Command::Admin(args) => cipherwhisper_cli::run(args).await,
-        Command::TlsInit(args) => tls::generate(args),
+        let Command::Ui(args) = command else {
+            unreachable!()
+        };
+        return desktop::run(args);
     }
+    tokio::runtime::Runtime::new()?.block_on(async move {
+        match command {
+            Command::Ui(args) => launcher::run(args).await,
+            Command::LocalTest(args) => local_test::run(args).await,
+            Command::Relay(args) => cipherwhisper_relay::run(args).await,
+            Command::Serve(args) => cipherwhisper_domain::run(*args).await,
+            Command::DeviceInit(args) => cipherwhisper_domain::init_device(args),
+            Command::Connect(args) => cipherwhisper_domain::run_client(args).await,
+            Command::Admin(args) => cipherwhisper_cli::run(args).await,
+            Command::TlsInit(args) => tls::generate(args),
+        }
+    })
 }
