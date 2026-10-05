@@ -410,6 +410,7 @@ async fn conflicting_rename_and_cross_topic_replies_are_rejected_without_losing_
         .device_command(
             &one.device_card()?.id,
             command(Operation::Send {
+                format: "markdown".into(),
                 message_id: Uuid::new_v4().to_string(),
                 topic_id: t.id.clone(),
                 body: "cross reply".into(),
@@ -686,5 +687,226 @@ async fn ahead_receipt_keeps_same_second_messages_in_center_journal_order() -> R
     drop(r);
     let r = Replica::open(f.root.path().join("one"), PASS, None)?;
     assert_eq!(r.messages(&t.id)?[0].body, "first");
+    Ok(())
+}
+#[tokio::test]
+async fn device_edits_and_topic_metadata_apply_without_special_history_rows() -> Result<()> {
+    use cipherwhisper_protocol::special::Special;
+    let mut f = fixture()?;
+    let mut r = client(&mut f, "chat-device")?;
+    let t = f
+        .center
+        .create_topic(&f.bob.contact_card()?.user_id, "device editing")?;
+    let original = f.center.send_message(&t.id, "before", None).await?;
+    f.bob
+        .receive(f.center.pending_envelopes()?.last().unwrap())?;
+    pull(&mut f.center, &mut r, 1)?;
+    r.send_special(
+        &t.id,
+        Special::new(
+            "message.edit",
+            serde_json::json!({"messageId":original.id,"body":"after"}),
+        ),
+    )
+    .await?;
+    let pending = r.pending()?.remove(0);
+    assert!(matches!(pending.operation, Operation::Control { .. }));
+    let cmd = Command {
+        id: pending.id,
+        operation: pending.operation,
+    };
+    let reply = f
+        .center
+        .device_command(&r.device_card()?.id, cmd.clone())
+        .await?;
+    r.apply_command_reply(&cmd, &reply)?;
+    pull(&mut f.center, &mut r, 1)?;
+    assert_eq!(r.chat_page(&t.id, None, None, 50)?.items.len(), 1);
+    assert_eq!(r.messages(&t.id)?[0].body, "after");
+    r.send_special(
+        &t.id,
+        Special::new(
+            "topic.meta",
+            serde_json::json!({"pinned":true,"tags":["测试"],"status":"active"}),
+        ),
+    )
+    .await?;
+    let pending = r.pending()?.remove(0);
+    let cmd = Command {
+        id: pending.id,
+        operation: pending.operation,
+    };
+    let reply = f
+        .center
+        .device_command(&r.device_card()?.id, cmd.clone())
+        .await?;
+    r.apply_command_reply(&cmd, &reply)?;
+    pull(&mut f.center, &mut r, 1)?;
+    assert!(r.topics(None)?[0].pinned);
+    assert_eq!(r.topic(&t.id)?.tags, vec!["测试"]);
+    r.send_special(
+        &t.id,
+        Special::new(
+            "message.withdraw",
+            serde_json::json!({"messageId":original.id}),
+        ),
+    )
+    .await?;
+    let pending = r.pending()?.remove(0);
+    let cmd = Command {
+        id: pending.id,
+        operation: pending.operation,
+    };
+    let reply = f
+        .center
+        .device_command(&r.device_card()?.id, cmd.clone())
+        .await?;
+    r.apply_command_reply(&cmd, &reply)?;
+    pull(&mut f.center, &mut r, 1)?;
+    assert_eq!(r.messages(&t.id)?.len(), 1);
+    assert!(r.messages(&t.id)?[0].body.is_empty());
+    Ok(())
+}
+#[tokio::test]
+async fn received_file_parts_sync_to_devices_after_consent() -> Result<()> {
+    use cipherwhisper_protocol::special::Special;
+    let mut f = fixture()?;
+    let mut r = client(&mut f, "file-device")?;
+    let t = f
+        .center
+        .create_topic(&f.bob.contact_card()?.user_id, "device files")?;
+    f.center.send_message(&t.id, "ready", None).await?;
+    f.bob
+        .receive(f.center.pending_envelopes()?.last().unwrap())?;
+    let bytes = b"file bytes through center and replica";
+    let offer = f
+        .bob
+        .offer_file(&t.id, "sample.txt", "text/plain", bytes)
+        .await?;
+    f.center
+        .receive(f.bob.pending_envelopes()?.last().unwrap())?;
+    pull(&mut f.center, &mut r, 1)?;
+    let file = r
+        .chat_page(&t.id, None, None, 50)?
+        .items
+        .last()
+        .unwrap()
+        .file
+        .clone()
+        .unwrap();
+    r.send_special(
+        &t.id,
+        Special::new(
+            "file.accept",
+            serde_json::json!({"fileId":file.file_id,"offerId":offer.id}),
+        ),
+    )
+    .await?;
+    let pending = r.pending()?.remove(0);
+    let cmd = Command {
+        id: pending.id,
+        operation: pending.operation,
+    };
+    let reply = f
+        .center
+        .device_command(&r.device_card()?.id, cmd.clone())
+        .await?;
+    r.apply_command_reply(&cmd, &reply)?;
+    f.bob
+        .receive(f.center.pending_envelopes()?.last().unwrap())?;
+    // The fixture's relay is deliberately absent. Pumping still durably queues
+    // authorized file chunks before the network request fails.
+    f.bob.sync(true).await?;
+    for envelope in f.bob.pending_envelopes()? {
+        f.center.receive(&envelope)?;
+    }
+    pull(&mut f.center, &mut r, 1)?;
+    assert_eq!(r.download_file(&offer.id)?.1, bytes);
+    assert_eq!(r.messages(&t.id)?.len(), 2);
+    Ok(())
+}
+
+#[tokio::test]
+async fn device_plaintext_commands_stay_visible_and_cannot_mutate_history() -> Result<()> {
+    use cipherwhisper_protocol::special::Special;
+    let mut f = fixture()?;
+    let mut r = client(&mut f, "injection-device")?;
+    let t = f
+        .center
+        .create_topic(&f.bob.contact_card()?.user_id, "inert control text")?;
+    let original = f.center.send_message(&t.id, "original", None).await?;
+    f.bob
+        .receive(f.center.pending_envelopes()?.last().unwrap())?;
+    pull(&mut f.center, &mut r, 1)?;
+    let control = Special::new(
+        "message.withdraw",
+        serde_json::json!({"messageId":original.id}),
+    );
+    for body in [
+        control.body()?,
+        format!("cipherwhisper.special\n{}", control.body()?),
+    ] {
+        let sent = r.send_message(&t.id, &body, None).await?;
+        let page = r.chat_page(&t.id, None, None, 50)?;
+        assert!(page.items.iter().any(|m| m.message.id == sent.id
+            && m.message.body == body
+            && m.special_kind.is_none()));
+        let pending = r.pending()?.remove(0);
+        assert!(pending.retry_limit.is_some());
+        assert!(matches!(pending.operation, Operation::Send { .. }));
+        let cmd = Command {
+            id: pending.id,
+            operation: pending.operation,
+        };
+        let reply = f
+            .center
+            .device_command(&r.device_card()?.id, cmd.clone())
+            .await?;
+        assert!(
+            matches!(&reply.result, CommandResult::Accepted { entity: Entity::Message(m), .. } if m.id == sent.id && m.body == body)
+        );
+        r.apply_command_reply(&cmd, &reply)?;
+        f.bob
+            .receive(f.center.pending_envelopes()?.last().unwrap())?;
+        pull(&mut f.center, &mut r, 1)?;
+        assert_eq!(f.center.messages(&t.id)?[0].body, "original");
+        assert_eq!(f.bob.messages(&t.id)?[0].body, "original");
+        assert_eq!(r.messages(&t.id)?[0].body, "original");
+    }
+    // Even a caller-supplied display format cannot promote Send to Control.
+    let cmd = command(Operation::Send {
+        format: "control".into(),
+        message_id: Uuid::new_v4().to_string(),
+        topic_id: t.id.clone(),
+        body: control.body()?,
+        reply_to: None,
+        timestamp: now(),
+    });
+    let reply = f.center.device_command(&r.device_card()?.id, cmd).await?;
+    assert!(matches!(reply.result, CommandResult::Accepted { .. }));
+    assert_eq!(f.center.messages(&t.id)?[0].body, "original");
+    assert_eq!(f.center.messages(&t.id)?.last().unwrap().format, "unknown");
+    f.bob
+        .receive(f.center.pending_envelopes()?.last().unwrap())?;
+    assert_eq!(f.bob.messages(&t.id)?[0].body, "original");
+    assert_eq!(f.bob.messages(&t.id)?.last().unwrap().format, "unknown");
+    let raw = r#"{"version":99,"kind":"future.control","data":{"html":"<script>bad()</script>"}}"#;
+    let unknown = f.center.queue_event(
+        &f.bob.contact_card()?.user_id,
+        Event::Control {
+            operation_id: Uuid::new_v4().to_string(),
+            topic_id: t.id.clone(),
+            topic_title: t.title.clone(),
+            created_at: t.created_at,
+            body: raw.into(),
+        },
+    )?;
+    f.bob.receive(&unknown)?;
+    pull(&mut f.center, &mut r, 1)?;
+    let page = r.chat_page(&t.id, None, None, 50)?;
+    let received = page.items.last().unwrap();
+    assert_eq!(received.message.body, raw);
+    assert_eq!(received.special_kind.as_deref(), Some("unknown"));
+    assert!(received.special_error.as_deref().unwrap().contains("99"));
     Ok(())
 }

@@ -25,8 +25,8 @@ pub fn validate_server(server: &str, ca: &str) -> Result<Client> {
         .build()?)
 }
 pub struct Replica {
-    db: Connection,
-    key: Zeroizing<[u8; 32]>,
+    pub(crate) db: Connection,
+    pub(crate) key: Zeroizing<[u8; 32]>,
     _lock: File,
     pair: Option<Pairing>,
     http: Option<Client>,
@@ -341,17 +341,37 @@ impl Replica {
             .find(|job| job.id == id && job.retry_paused)
             .ok_or_else(|| anyhow::anyhow!("只能重新发送已暂停的消息"))?;
         let Operation::Send {
+            message_id,
+            timestamp,
             topic_id,
             body,
+            format,
             reply_to,
             ..
         } = job.operation
         else {
             anyhow::bail!("此任务不是消息");
         };
-        self.send_message(&topic_id, &body, reply_to).await
+        if format == "file" {
+            self.db.execute(
+                "UPDATE device_pending SET attempts=0,next_attempt=0,last_error=NULL WHERE id=?",
+                [id],
+            )?;
+            return Ok(Message {
+                id: message_id,
+                topic_id,
+                sender_id: self.contact_card()?.user_id,
+                timestamp,
+                body,
+                format,
+                reply_to,
+                delivery: "queued".into(),
+            });
+        }
+        self.send_formatted(&topic_id, &body, reply_to, &format)
+            .await
     }
-    fn enqueue(&mut self, operation: Operation) -> Result<String> {
+    pub(crate) fn enqueue(&mut self, operation: Operation) -> Result<String> {
         let encoded = serde_json::to_string(&operation)?;
         if !matches!(operation, Operation::Send { .. })
             && let Some(id) = self
@@ -451,6 +471,7 @@ impl Replica {
         Ok(())
     }
     pub async fn sync(&mut self, force: bool) -> Result<SyncReport> {
+        self.pump_files().await?;
         let mut report = SyncReport::default();
         self.flush(&mut report, force).await?;
         for _ in 0..100 {
@@ -522,16 +543,21 @@ impl Replica {
             .collect()
     }
     pub fn topic(&self, id: &str) -> Result<Topic> {
-        Ok(self
-            .db
-            .query_row("SELECT * FROM topics WHERE id=?", [id], topic_row)?)
+        chat::decorate_topic(
+            &self.db,
+            self.db
+                .query_row("SELECT * FROM topics WHERE id=?", [id], topic_row)?,
+        )
     }
     pub fn topics(&self, peer: Option<&str>) -> Result<Vec<Topic>> {
         let mut s = self.db.prepare(
             "SELECT * FROM topics WHERE (?1 IS NULL OR peer_id=?1) ORDER BY updated_at DESC,id",
         )?;
-        Ok(s.query_map([peer], topic_row)?
-            .collect::<rusqlite::Result<Vec<_>>>()?)
+        s.query_map([peer], topic_row)?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+            .into_iter()
+            .map(|t| chat::decorate_topic(&self.db, t))
+            .collect()
     }
     pub fn unread(&self) -> Result<Vec<crate::unread::UnreadTopic>> {
         crate::unread::summary(&self.db, &self.pairing()?.domain.user_id)
@@ -539,10 +565,10 @@ impl Replica {
     pub fn mark_read(&self, topic: &str, through: &str) -> Result<()> {
         crate::unread::mark_read(&self.db, &self.pairing()?.domain.user_id, topic, through)
     }
-    fn queued_messages(&self) -> Result<Vec<Message>> {
+    pub(crate) fn queued_messages(&self) -> Result<Vec<Message>> {
         let mut stmt = self
             .db
-            .prepare("SELECT operation,state,attempts FROM device_pending ORDER BY rowid")?;
+            .prepare("SELECT operation,state,attempts FROM device_pending WHERE state<>'accepted' ORDER BY rowid")?;
         let domain = &self.pairing()?.domain.user_id;
         let mut messages = Vec::new();
         for r in stmt.query_map([], |r| {
@@ -557,6 +583,7 @@ impl Replica {
                 message_id,
                 topic_id,
                 body,
+                format,
                 reply_to,
                 timestamp,
             } = serde_json::from_str(&raw)?
@@ -567,7 +594,7 @@ impl Replica {
                     sender_id: domain.clone(),
                     timestamp,
                     body,
-                    format: "markdown".into(),
+                    format,
                     reply_to,
                     delivery: if state == "failed" {
                         "failed"
@@ -680,6 +707,15 @@ impl Replica {
         body: &str,
         reply_to: Option<String>,
     ) -> Result<Message> {
+        self.send_formatted(id, body, reply_to, "markdown").await
+    }
+    pub(crate) async fn send_formatted(
+        &mut self,
+        id: &str,
+        body: &str,
+        reply_to: Option<String>,
+        format: &str,
+    ) -> Result<Message> {
         let t = self.topic(id)?;
         ensure!(!t.archived, "topic is archived");
         let message_id = Uuid::new_v4().to_string();
@@ -689,7 +725,7 @@ impl Replica {
             topic_title: t.title,
             created_at: t.created_at,
             body: body.into(),
-            format: "markdown".into(),
+            format: format.into(),
             reply_to: reply_to.clone(),
         }
         .validate()?;
@@ -707,6 +743,7 @@ impl Replica {
         }
         let timestamp = now();
         self.enqueue(Operation::Send {
+            format: format.into(),
             message_id: message_id.clone(),
             topic_id: id.into(),
             body: body.into(),
@@ -719,7 +756,7 @@ impl Replica {
             sender_id: self.contact_card()?.user_id,
             timestamp,
             body: body.into(),
-            format: "markdown".into(),
+            format: format.into(),
             reply_to,
             delivery: "queued".into(),
         })
@@ -781,6 +818,9 @@ fn apply_revision(db: &Connection, entity: &Entity, seq: i64) -> Result<()> {
 
 fn apply_entity(db: &Connection, entity: &Entity) -> Result<()> {
     match entity {
+        Entity::FilePart(p) => {
+            chat::store_part(db, p)?;
+        }
         Entity::Peer(card) => {
             card.validate()?;
             if let Some(old) = db
@@ -817,6 +857,17 @@ fn apply_entity(db: &Connection, entity: &Entity) -> Result<()> {
                 ensure!(old == t.peer_id, "topic peer changed in sync");
             }
             db.execute("INSERT INTO topics VALUES(?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET title=excluded.title,updated_at=excluded.updated_at,archived=excluded.archived",params![t.id,t.peer_id,t.title,t.created_at,t.updated_at,t.archived])?;
+            let meta = chat::TopicMeta {
+                pinned: t.pinned,
+                tags: t.tags.clone(),
+                status: t.status.clone(),
+            };
+            cipherwhisper_protocol::special::Special::new(
+                "topic.meta",
+                serde_json::to_value(&meta)?,
+            )
+            .validate()?;
+            db.execute("INSERT INTO chat_topic_meta VALUES(?,?) ON CONFLICT(topic_id) DO UPDATE SET data=excluded.data",params![t.id,serde_json::to_string(&meta)?])?;
         }
         Entity::Message(m) => {
             let peer: String = db.query_row(
@@ -848,8 +899,16 @@ fn apply_entity(db: &Connection, entity: &Entity) -> Result<()> {
             uuid(&m.id)?;
             uuid(&m.topic_id)?;
             ensure!(
-                m.format == "markdown"
-                    && !m.body.trim().is_empty()
+                [
+                    "markdown",
+                    "markdown.edited",
+                    "withdrawn",
+                    "file",
+                    "unknown",
+                    "control.unknown"
+                ]
+                .contains(&m.format.as_str())
+                    && (m.format == "withdrawn" || !m.body.trim().is_empty())
                     && m.body.len() <= MAX_BODY
                     && m.timestamp >= 0
                     && ["queued", "sent", "delivered", "received"].contains(&m.delivery.as_str()),
@@ -864,14 +923,13 @@ fn apply_entity(db: &Connection, entity: &Entity) -> Result<()> {
             {
                 ensure!(
                     old.topic_id == m.topic_id
-                        && old.body == m.body
                         && old.sender_id == m.sender_id
                         && old.timestamp == m.timestamp
                         && old.reply_to == m.reply_to,
-                    "immutable message changed in sync"
+                    "message identity changed in sync"
                 );
             }
-            db.execute("INSERT INTO messages VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET delivery=excluded.delivery",params![m.id,m.topic_id,m.sender_id,m.timestamp,m.body,m.format,m.reply_to,m.delivery])?;
+            db.execute("INSERT INTO messages VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET delivery=excluded.delivery,body=excluded.body,format=excluded.format",params![m.id,m.topic_id,m.sender_id,m.timestamp,m.body,m.format,m.reply_to,m.delivery])?;
         }
     };
     Ok(())

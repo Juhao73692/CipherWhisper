@@ -1,4 +1,6 @@
 //! Versioned public routing and signed identity types. Conversation data is ciphertext only.
+pub mod file;
+pub mod special;
 use anyhow::{Result, ensure};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -248,6 +250,21 @@ pub struct Topic {
     pub created_at: i64,
     pub updated_at: i64,
     pub archived: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub pinned: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
+    #[serde(default = "default_topic_status", skip_serializing_if = "is_open")]
+    pub status: String,
+}
+fn is_false(value: &bool) -> bool {
+    !value
+}
+fn is_open(value: &str) -> bool {
+    value == "open"
+}
+fn default_topic_status() -> String {
+    "open".into()
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -264,6 +281,13 @@ pub struct Message {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Event {
+    Control {
+        operation_id: String,
+        topic_id: String,
+        topic_title: String,
+        created_at: i64,
+        body: String,
+    },
     Message {
         message_id: String,
         topic_id: String,
@@ -284,6 +308,22 @@ pub enum Event {
 impl Event {
     pub fn validate(&self) -> Result<()> {
         let (topic_id, title, created) = match self {
+            Self::Control {
+                operation_id,
+                topic_id,
+                topic_title,
+                created_at,
+                body,
+            } => {
+                uuid(operation_id)?;
+                ensure!(
+                    !body.trim().is_empty() && body.len() <= MAX_BODY,
+                    "invalid control body"
+                );
+                // Unknown application versions/types remain structurally valid so
+                // receivers can acknowledge and show them without executing them.
+                (topic_id, topic_title, created_at)
+            }
             Self::Message {
                 message_id,
                 topic_id,
@@ -295,8 +335,11 @@ impl Event {
             } => {
                 uuid(message_id)?;
                 ensure!(
-                    format == "markdown" && !body.trim().is_empty() && body.len() <= MAX_BODY,
-                    "invalid Markdown body"
+                    !format.is_empty()
+                        && format.len() <= 128
+                        && !body.trim().is_empty()
+                        && body.len() <= MAX_BODY,
+                    "invalid message body or format"
                 );
                 if let Some(id) = reply_to {
                     uuid(id)?;

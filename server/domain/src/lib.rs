@@ -221,6 +221,106 @@ async fn update_topic(
 async fn history(State(state): State<AppState>, Path(id): Path<String>) -> Api<Vec<Message>> {
     Ok(Json(state.domain.lock().await.messages(&id)?))
 }
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct HistoryPageQuery {
+    before: Option<String>,
+    around: Option<String>,
+    limit: Option<usize>,
+}
+async fn chat_page(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Query(q): Query<HistoryPageQuery>,
+) -> Api<cipherwhisper_core::chat::MessagePage> {
+    Ok(Json(state.domain.lock().await.chat_page(
+        &id,
+        q.before.as_deref(),
+        q.around.as_deref(),
+        q.limit.unwrap_or(50),
+    )?))
+}
+#[derive(Deserialize)]
+struct ChangesQuery {
+    since: i64,
+}
+async fn chat_changes(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Query(q): Query<ChangesQuery>,
+) -> Api<cipherwhisper_core::chat::MessageChanges> {
+    Ok(Json(state.domain.lock().await.chat_changes(&id, q.since)?))
+}
+async fn draft(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Api<cipherwhisper_core::chat::Draft> {
+    Ok(Json(state.domain.lock().await.draft(&id)?))
+}
+async fn save_draft(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(d): Json<cipherwhisper_core::chat::Draft>,
+) -> Api<serde_json::Value> {
+    state.domain.lock().await.save_draft(&id, &d)?;
+    Ok(Json(serde_json::json!({"saved":true})))
+}
+async fn send_special(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(s): Json<cipherwhisper_protocol::special::Special>,
+) -> Api<Message> {
+    Ok(Json(state.domain.lock().await.send_special(&id, s).await?))
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FileUpload {
+    name: String,
+    mime: String,
+    hex: String,
+}
+async fn offer_file(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(f): Json<FileUpload>,
+) -> Api<Message> {
+    ensure_upload(&f)?;
+    let bytes = hex::decode(&f.hex).map_err(anyhow::Error::from)?;
+    Ok(Json(
+        state
+            .domain
+            .lock()
+            .await
+            .offer_file(&id, &f.name, &f.mime, &bytes)
+            .await?,
+    ))
+}
+fn ensure_upload(f: &FileUpload) -> Result<()> {
+    ensure!(
+        f.hex.len() <= cipherwhisper_protocol::special::MAX_FILE_BYTES * 2,
+        "file exceeds 16 MiB"
+    );
+    Ok(())
+}
+async fn download_file(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> std::result::Result<Response, ApiError> {
+    let (name, bytes) = state.domain.lock().await.download_file(&id)?;
+    let encoded: String = name.bytes().map(|b| format!("%{b:02X}")).collect();
+    Ok((
+        [
+            ("content-type", "application/octet-stream".to_owned()),
+            (
+                "content-disposition",
+                format!("attachment; filename*=UTF-8''{encoded}"),
+            ),
+            ("cache-control", "no-store".to_owned()),
+        ],
+        bytes,
+    )
+        .into_response())
+}
 async fn unread(
     State(state): State<AppState>,
 ) -> Api<Vec<cipherwhisper_core::unread::UnreadTopic>> {
@@ -481,6 +581,15 @@ async fn serve_workspace(
     };
     drop(token);
     let app = Router::new()
+        .route("/topics/{id}/page", get(chat_page))
+        .route("/topics/{id}/changes", get(chat_changes))
+        .route("/topics/{id}/draft", get(draft).post(save_draft))
+        .route("/topics/{id}/special", post(send_special))
+        .route(
+            "/topics/{id}/files",
+            post(offer_file).layer(DefaultBodyLimit::max(34 * 1024 * 1024)),
+        )
+        .route("/files/{id}/download", get(download_file))
         .route("/identity", get(identity))
         .route("/peers", get(peers).post(add_peer))
         .route("/topics", get(topics).post(create_topic))

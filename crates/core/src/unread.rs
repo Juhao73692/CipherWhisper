@@ -9,17 +9,18 @@ pub struct UnreadTopic {
     pub peer_id: String,
     pub count: i64,
     pub last_message_id: String,
+    pub first_message_id: String,
 }
 
 pub(crate) fn summary(db: &Connection, self_id: &str) -> Result<Vec<UnreadTopic>> {
     let mut stmt = db.prepare(
         "WITH unread AS (
-            SELECT m.topic_id,COUNT(*) AS count,MAX(m.rowid) AS latest
+            SELECT m.topic_id,COUNT(*) AS count,MAX(m.rowid) AS latest,MIN(m.rowid) AS first
             FROM messages m LEFT JOIN ui_topic_reads r ON r.topic_id=m.topic_id
             WHERE m.sender_id<>? AND m.rowid>COALESCE(r.last_rowid,0)
             GROUP BY m.topic_id
-        ) SELECT u.topic_id,t.peer_id,u.count,m.id FROM unread u
-          JOIN topics t ON t.id=u.topic_id JOIN messages m ON m.rowid=u.latest",
+        ) SELECT u.topic_id,t.peer_id,u.count,m.id,first.id FROM unread u
+          JOIN topics t ON t.id=u.topic_id JOIN messages m ON m.rowid=u.latest JOIN messages first ON first.rowid=u.first",
     )?;
     Ok(stmt
         .query_map([self_id], |row| {
@@ -28,6 +29,7 @@ pub(crate) fn summary(db: &Connection, self_id: &str) -> Result<Vec<UnreadTopic>
                 peer_id: row.get(1)?,
                 count: row.get(2)?,
                 last_message_id: row.get(3)?,
+                first_message_id: row.get(4)?,
             })
         })?
         .collect::<rusqlite::Result<_>>()?)

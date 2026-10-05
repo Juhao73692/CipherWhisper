@@ -125,6 +125,7 @@ impl DeviceAuth {
     deny_unknown_fields
 )]
 pub enum Entity {
+    FilePart(FilePart),
     Peer(ContactCard),
     Topic(Topic),
     Message(Message),
@@ -132,11 +133,20 @@ pub enum Entity {
 impl Entity {
     pub fn key(&self) -> (&'static str, &str) {
         match self {
+            Self::FilePart(v) => ("file_part", &v.id),
             Self::Peer(v) => ("peer", &v.user_id),
             Self::Topic(v) => ("topic", &v.id),
             Self::Message(v) => ("message", &v.id),
         }
     }
+}
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct FilePart {
+    pub id: String,
+    pub offer_id: String,
+    pub part: usize,
+    pub hex: String,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -172,11 +182,21 @@ pub enum Operation {
         base_archived: bool,
     },
     Send {
+        #[serde(
+            default = "markdown_format",
+            skip_serializing_if = "is_markdown_format"
+        )]
+        format: String,
         message_id: String,
         topic_id: String,
         body: String,
         reply_to: Option<String>,
         timestamp: i64,
+    },
+    Control {
+        operation_id: String,
+        topic_id: String,
+        body: String,
     },
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -255,4 +275,12 @@ pub struct DeviceStatus {
     pub created_at: i64,
     pub last_seen: i64,
     pub acknowledged_cursor: i64,
+}
+
+fn markdown_format() -> String {
+    "markdown".into()
+}
+
+fn is_markdown_format(value: &str) -> bool {
+    value == "markdown"
 }

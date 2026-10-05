@@ -1,13 +1,18 @@
 //! Center-owned journal and device authorization; all journal triggers share the data transaction.
 use super::*;
 use cipherwhisper_protocol::device::*;
-const TOPIC_JSON: &str = "json_object('id',new.id,'peerId',new.peer_id,'title',new.title,'createdAt',new.created_at,'updatedAt',new.updated_at,'archived',json(CASE new.archived WHEN 1 THEN 'true' ELSE 'false' END))";
+const TOPIC_JSON: &str = "json_object('id',new.id,'peerId',new.peer_id,'title',new.title,'createdAt',new.created_at,'updatedAt',new.updated_at,'archived',json(CASE new.archived WHEN 1 THEN 'true' ELSE 'false' END),'pinned',json(CASE COALESCE((SELECT json_extract(data,'$.pinned') FROM chat_topic_meta WHERE topic_id=new.id),0) WHEN 1 THEN 'true' ELSE 'false' END),'tags',json(COALESCE((SELECT json_extract(data,'$.tags') FROM chat_topic_meta WHERE topic_id=new.id),'[]')),'status',COALESCE((SELECT json_extract(data,'$.status') FROM chat_topic_meta WHERE topic_id=new.id),'open'))";
 const MESSAGE_JSON: &str = "json_object('id',new.id,'topicId',new.topic_id,'senderId',new.sender_id,'timestamp',new.timestamp,'body',new.body,'format',new.format,'replyTo',new.reply_to,'delivery',new.delivery)";
 pub(crate) fn initialize(db: &mut Connection) -> Result<()> {
     db.execute_batch("CREATE TABLE IF NOT EXISTS devices(id TEXT PRIMARY KEY,card TEXT NOT NULL,revoked INTEGER NOT NULL DEFAULT 0,created_at INTEGER NOT NULL,last_seen INTEGER NOT NULL DEFAULT 0,ack_cursor INTEGER NOT NULL DEFAULT 0,served_cursor INTEGER NOT NULL DEFAULT 0);
     CREATE TABLE IF NOT EXISTS device_nonces(device_id TEXT NOT NULL,nonce TEXT NOT NULL,timestamp INTEGER NOT NULL,PRIMARY KEY(device_id,nonce));
     CREATE TABLE IF NOT EXISTS device_commands(device_id TEXT NOT NULL,id TEXT NOT NULL,digest TEXT NOT NULL,result TEXT NOT NULL,PRIMARY KEY(device_id,id));
     CREATE TABLE IF NOT EXISTS sync_log(seq INTEGER PRIMARY KEY AUTOINCREMENT,kind TEXT NOT NULL,entity_id TEXT NOT NULL,data TEXT NOT NULL); CREATE INDEX IF NOT EXISTS sync_entity ON sync_log(kind,entity_id,seq);")?;
+    // Refresh topic snapshots without resetting the existing journal epoch.
+    db.execute_batch(&format!("DROP TRIGGER IF EXISTS sync_topics_INSERT; DROP TRIGGER IF EXISTS sync_topics_UPDATE;
+        CREATE TRIGGER sync_topics_INSERT AFTER INSERT ON topics BEGIN INSERT INTO sync_log(kind,entity_id,data) VALUES('topic',new.id,{TOPIC_JSON}); END;
+        CREATE TRIGGER sync_topics_UPDATE AFTER UPDATE ON topics BEGIN INSERT INTO sync_log(kind,entity_id,data) VALUES('topic',new.id,{TOPIC_JSON}); END;
+        CREATE TRIGGER IF NOT EXISTS sync_file_parts_INSERT AFTER INSERT ON chat_file_parts BEGIN INSERT INTO sync_log(kind,entity_id,data) VALUES('file_part',new.offer_id||':'||new.part,json_object('id',new.offer_id||':'||new.part,'offerId',new.offer_id,'part',new.part,'hex',new.hex)); END;"))?;
     if db.query_row(
         "SELECT EXISTS(SELECT 1 FROM metadata WHERE key='device-sync-journal' AND value='1')",
         [],
@@ -22,7 +27,7 @@ pub(crate) fn initialize(db: &mut Connection) -> Result<()> {
         ("messages", "message", MESSAGE_JSON),
     ] {
         for event in ["INSERT", "UPDATE"] {
-            tx.execute_batch(&format!("CREATE TRIGGER sync_{table}_{event} AFTER {event} ON {table} BEGIN INSERT INTO sync_log(kind,entity_id,data) VALUES('{kind}',new.id,{json}); END;"))?;
+            tx.execute_batch(&format!("CREATE TRIGGER IF NOT EXISTS sync_{table}_{event} AFTER {event} ON {table} BEGIN INSERT INTO sync_log(kind,entity_id,data) VALUES('{kind}',new.id,{json}); END;"))?;
         }
         let json = json.replace("new.", "");
         tx.execute_batch(&format!(
@@ -340,6 +345,7 @@ impl Endpoint {
                 message_id,
                 topic_id,
                 body,
+                format,
                 reply_to,
                 timestamp,
             } => {
@@ -352,10 +358,28 @@ impl Endpoint {
                     topic_title: t.title,
                     created_at: t.created_at,
                     body: body.clone(),
-                    format: "markdown".into(),
+                    format: format.clone(),
                     reply_to: reply_to.clone(),
                 }
                 .validate()?;
+            }
+            Operation::Control {
+                operation_id,
+                topic_id,
+                body,
+            } => {
+                let t = self.topic(topic_id)?;
+                ensure!(!t.archived, "topic is archived");
+                Event::Control {
+                    operation_id: operation_id.clone(),
+                    topic_id: topic_id.clone(),
+                    topic_title: t.title,
+                    created_at: t.created_at,
+                    body: body.clone(),
+                }
+                .validate()?;
+                let s = cipherwhisper_protocol::special::Special::parse(body)?;
+                chat::validate_action(&self.db, topic_id, &self.contact_card()?.user_id, &s)?;
             }
         };
         Ok(())
@@ -387,7 +411,9 @@ impl Endpoint {
             return self.reject_command(device, &command, &hash, e.to_string());
         }
         match &command.operation {
-            Operation::Send { topic_id, .. } | Operation::UpdateTopic { topic_id, .. } => {
+            Operation::Send { topic_id, .. }
+            | Operation::Control { topic_id, .. }
+            | Operation::UpdateTopic { topic_id, .. } => {
                 let t = self.topic(topic_id)?;
                 self.ensure_session(&t.peer_id).await?;
             }
@@ -414,6 +440,9 @@ impl Endpoint {
                     created_at: now(),
                     updated_at: now(),
                     archived: false,
+                    pinned: false,
+                    tags: Vec::new(),
+                    status: "open".into(),
                 };
 
                 let tx = self.db.transaction()?;
@@ -437,6 +466,7 @@ impl Endpoint {
                 message_id,
                 topic_id,
                 body,
+                format,
                 reply_to,
                 ..
             } => {
@@ -447,22 +477,38 @@ impl Endpoint {
                     topic_title: t.title,
                     created_at: t.created_at,
                     body: body.clone(),
-                    format: "markdown".into(),
+                    format: format.clone(),
                     reply_to: reply_to.clone(),
                 };
                 let queued = self.queue_event_transaction(&t.peer_id, event, |tx, _| {
-                    let m = tx.query_row(
+                    let entity = Entity::Message(tx.query_row(
                         "SELECT * FROM messages WHERE id=?",
                         [message_id],
                         message_row,
-                    )?;
-                    record(
-                        tx,
-                        device,
-                        &command.id,
-                        &hash,
-                        &accepted(tx, Entity::Message(m))?,
-                    )
+                    )?);
+                    record(tx, device, &command.id, &hash, &accepted(tx, entity)?)
+                });
+                if let Err(e) = queued {
+                    return self.reject_command(device, &command, &hash, e.to_string());
+                }
+                self.cached_command(device, &command.id)?
+            }
+            Operation::Control {
+                operation_id,
+                topic_id,
+                body,
+            } => {
+                let t = self.topic(topic_id)?;
+                let event = Event::Control {
+                    operation_id: operation_id.clone(),
+                    topic_id: topic_id.clone(),
+                    topic_title: t.title,
+                    created_at: t.created_at,
+                    body: body.clone(),
+                };
+                let queued = self.queue_event_transaction(&t.peer_id, event, |tx, _| {
+                    let entity = chat::control_result_entity(tx, operation_id, topic_id, body)?;
+                    record(tx, device, &command.id, &hash, &accepted(tx, entity)?)
                 });
                 if let Err(e) = queued {
                     return self.reject_command(device, &command, &hash, e.to_string());

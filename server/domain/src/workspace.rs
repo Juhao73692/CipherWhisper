@@ -157,3 +157,68 @@ impl Workspace {
         self.center()?.devices()
     }
 }
+
+impl Workspace {
+    pub(crate) fn chat_page(
+        &self,
+        id: &str,
+        before: Option<&str>,
+        around: Option<&str>,
+        limit: usize,
+    ) -> Result<cipherwhisper_core::chat::MessagePage> {
+        match self {
+            Self::Center(e) => e.chat_page(id, before, around, limit),
+            Self::Client(e) => e.chat_page(id, before, around, limit),
+        }
+    }
+    pub(crate) fn chat_changes(
+        &self,
+        id: &str,
+        since: i64,
+    ) -> Result<cipherwhisper_core::chat::MessageChanges> {
+        match self {
+            Self::Center(e) => e.chat_changes(id, since),
+            Self::Client(e) => e.chat_changes(id, since),
+        }
+    }
+    pub(crate) fn draft(&self, id: &str) -> Result<cipherwhisper_core::chat::Draft> {
+        match self {
+            Self::Center(e) => e.draft(id),
+            Self::Client(e) => e.draft(id),
+        }
+    }
+    pub(crate) fn save_draft(&self, id: &str, d: &cipherwhisper_core::chat::Draft) -> Result<()> {
+        match self {
+            Self::Center(e) => e.save_draft(id, d),
+            Self::Client(e) => e.save_draft(id, d),
+        }
+    }
+    pub(crate) async fn send_special(
+        &mut self,
+        id: &str,
+        s: cipherwhisper_protocol::special::Special,
+    ) -> Result<Message> {
+        match self {
+            Self::Center(e) => e.send_special(id, s).await,
+            Self::Client(e) => e.send_special(id, s).await,
+        }
+    }
+    pub(crate) async fn offer_file(
+        &mut self,
+        id: &str,
+        name: &str,
+        mime: &str,
+        bytes: &[u8],
+    ) -> Result<Message> {
+        match self {
+            Self::Center(e) => e.offer_file(id, name, mime, bytes).await,
+            Self::Client(e) => e.offer_file(id, name, mime, bytes).await,
+        }
+    }
+    pub(crate) fn download_file(&self, id: &str) -> Result<(String, Vec<u8>)> {
+        match self {
+            Self::Center(e) => e.download_file(id),
+            Self::Client(e) => e.download_file(id),
+        }
+    }
+}

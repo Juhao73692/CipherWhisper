@@ -111,7 +111,7 @@ Topic update event:
 }
 ```
 
-Unknown payload fields, event types and protocol versions fail closed; no automatic fallback to plaintext. Future edit/delete/read/reaction/attachment types extend Conversation Layer after their authorization/conflict rules are specified. There are no separate Relay routes for these semantics.
+Unknown payload fields, event types and protocol versions fail closed; no automatic fallback to plaintext. The chat extension below adds the explicit `control` event for edits, withdrawal, topic metadata and consented file chunks. Unknown control body versions/types remain inert and inspectable. There are no separate Relay routes for these semantics.
 
 ## Optional legacy Relay HTTP authentication
 
@@ -181,7 +181,7 @@ Successful responses are `{version,domain_id,device_id,nonce,data,signature}`, s
 
 The client verifies the signature and exact request nonce/domain/device before using `data`. Unsigned error responses cannot authorize state changes or permanently reject commands; they leave the operation queued for retry.
 
-Pull returns `{epoch,from_cursor,next_cursor,high_water,changes:[{seq,entity}]}`. Entities are `{kind:"peer"|"topic"|"message",data:...}`; Topic/Message retain camelCase shapes from the local API. Changes are immutable snapshots committed with center data in the same SQLite transaction, ordered by monotonic sequence. Pagination bounds count and encoded bytes. Client data and cursor commit atomically; ACK `{epoch,cursor}` follows. ACK does not delete shared history. Initial cursor is 0, each device maintains independent progress, and observed journal rollback fails closed.
+Pull returns `{epoch,from_cursor,next_cursor,high_water,changes:[{seq,entity}]}`. Entities are `{kind:"peer"|"topic"|"message"|"file_part",data:...}`; Topic/Message retain camelCase shapes from the local API. Changes are immutable snapshots committed with center data in the same SQLite transaction, ordered by monotonic sequence. Pagination bounds count and encoded bytes. Client data and cursor commit atomically; ACK `{epoch,cursor}` follows. ACK does not delete shared history. Initial cursor is 0, each device maintains independent progress, and observed journal rollback fails closed.
 
 Commands are `{id:<fixed UUID>,operation}`. Operations have a `type`: `add_peer`, `create_topic`, `update_topic`, `send`. Send fixes `message_id`, `topic_id`, Markdown `body`, optional `reply_to` and local queue timestamp. Center assigns final message timestamp. Topic modification includes `base_title`/`base_archived` for conflict checking. Only the center encrypts into the external peer session.
 
@@ -210,3 +210,9 @@ Successful responses are `PeerResponse<T> {version,from,to,nonce,data,signature}
 The Envelope and decrypted ConversationEvent remain unchanged. Outgoing ciphertext and ratchet state commit before any network call. Incoming HTTP only persists opaque ciphertext addressed to this center, without third-party routing or history access. A separate DB connection serves incoming calls while the Endpoint waits on outgoing network, preventing simultaneous first-session deadlock; it never mutates ratchets. The background Endpoint verifies/decrypts and commits history/ratchet/received digest, then the signed Delivery may report `acknowledged:true`. Delivery only queried by the original sender.
 
 States: `queued` = durable local outbox; `sent` = peer accepted ciphertext; `delivered` = verified signed confirmation after receiver commit. No human read receipt. Keep exact ciphertext until confirmation, retry with fresh request nonce, deduplicate ID + digest, and reject ID collisions. Errors use bounded exponential backoff, preserve local history and outbox, and do not reencrypt. An established session can queue while the peer is offline; there is no third-party mailbox, automatic NAT traversal or forwarding. Direct inbox capacity is 10000 pending envelopes; processed tombstones currently have no GC.
+
+## Chat application extension
+
+Ordinary message formats now include `file`: its body is a versioned file invitation containing only metadata. Unknown message formats remain inspectable, inert history. Application controls use a separate `Event::Control` serialized as `{type:"control",operation_id,topic_id,topic_title,created_at,body}`; `body` is the JSON string for a uniform `{version,kind,data}` object. Ordinary message bodies, including control JSON and the former `cipherwhisper.special\n` marker, never dispatch operations. Recognized controls apply directly to history and are not retained as separate messages; unknown controls retain their raw body. See [chat extension](chat-features.md) for authorization, history edits, consented file chunks and compatibility limits.
+
+Device `Send` commands have an optional `format` (default `markdown`). Device controls use the separate `Control` command `{operation_id,topic_id,body}`. Topic snapshots include shared pin/tag/status metadata. Message snapshots can update body and display format while preserving identity, author, topic, original timestamp and reply target. The `file_part` entity synchronizes a verified-authorized transfer part `{id,offerId,part,hex}`; its ID is `offerId:part`. Devices validate part bounds and hash on final download.

@@ -119,3 +119,19 @@ relay.example.com {
 ```
 
 Centers use `--relay https://relay.example.com`. They never change identity because that address changes. Ports 8790/8791 are local administration examples and are not exposed. Device access uses the separate authenticated TLS listener, e.g. 8792. Separate home Relays/Federation remain future work; the sample proxy does not expose the local management UI.
+
+## Chat extension
+
+All endpoints below use the existing loopback authorization and origin checks.
+
+| Endpoint | Request / response |
+| --- | --- |
+| `GET /topics/{id}/page` | Optional `before` message ID, `around` message ID, `limit` (1..100, default 50). Returns `{items,olderCursor,hasMore,revision}`. |
+| `GET /topics/{id}/changes?since=N` | Returns at most 100 changed message views, `{items,revision,hasMore}`. Continue from the returned revision. |
+| `GET /topics/{id}/draft` | Returns `{body,replyTo,revision}` for the local encrypted draft. |
+| `POST /topics/{id}/draft` | `{body,replyTo,revision}`; monotonically newer writes replace older drafts, including empty drafts. |
+| `POST /topics/{id}/special` | `{version,kind,data}`; validates author/topic binding and sends an explicit encrypted `Control` event. Ordinary `/messages` text never dispatches controls. |
+| `POST /topics/{id}/files` | `{name,mime,hex}` for a local source file, maximum 16 MiB decoded; stages encrypted chunks and sends an ordinary file invitation. |
+| `GET /files/{offerMessageId}/download` | Authenticated binary attachment, available to the receiving side after complete SHA-256 verification. |
+
+`GET /topics` additionally returns `pinned`, `tags` and `status`. Chat page items include `sequence`, `edited`, `withdrawn`, unknown-message details and optional `file` state. The older `/topics/{id}/messages` endpoint remains available for CLI/integration compatibility. See [chat feature protocol](chat-features.md) for ordinary file metadata and versioned control payloads.

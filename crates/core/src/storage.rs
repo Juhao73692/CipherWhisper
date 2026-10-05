@@ -83,5 +83,6 @@ pub fn open(dir: &Path) -> Result<(Connection, File)> {
         INSERT INTO metadata(key,value) VALUES('search-index','trigram-v1') ON CONFLICT(key) DO UPDATE SET value=excluded.value;")?;
         tx.commit()?;
     }
+    crate::chat::initialize(&db)?;
     Ok((db, lock))
 }

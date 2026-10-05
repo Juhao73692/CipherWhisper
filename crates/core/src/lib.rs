@@ -1,4 +1,5 @@
 //! Trust Domain center and separately keyed internal device replicas.
+pub mod chat;
 pub mod device;
 pub mod direct;
 pub mod domain_sync;
@@ -185,6 +186,9 @@ fn topic_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Topic> {
         created_at: row.get(3)?,
         updated_at: row.get(4)?,
         archived: row.get(5)?,
+        pinned: false,
+        tags: Vec::new(),
+        status: "open".into(),
     })
 }
 
@@ -481,6 +485,9 @@ impl Endpoint {
             created_at: now(),
             updated_at: now(),
             archived: false,
+            pinned: false,
+            tags: Vec::new(),
+            status: "open".into(),
         };
         Event::TopicUpdate {
             topic_id: topic.id.clone(),
@@ -503,17 +510,21 @@ impl Endpoint {
         Ok(topic)
     }
     pub fn topic(&self, id: &str) -> Result<Topic> {
-        Ok(self
-            .db
-            .query_row("SELECT * FROM topics WHERE id=?", [id], topic_row)?)
+        chat::decorate_topic(
+            &self.db,
+            self.db
+                .query_row("SELECT * FROM topics WHERE id=?", [id], topic_row)?,
+        )
     }
     pub fn topics(&self, peer: Option<&str>) -> Result<Vec<Topic>> {
         let mut stmt = self.db.prepare(
             "SELECT * FROM topics WHERE (?1 IS NULL OR peer_id=?1) ORDER BY updated_at DESC,id",
         )?;
-        Ok(stmt
-            .query_map([peer], topic_row)?
-            .collect::<rusqlite::Result<Vec<_>>>()?)
+        stmt.query_map([peer], topic_row)?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+            .into_iter()
+            .map(|t| chat::decorate_topic(&self.db, t))
+            .collect()
     }
     pub fn messages(&self, topic: &str) -> Result<Vec<Message>> {
         self.topic(topic)?;
@@ -551,6 +562,16 @@ impl Endpoint {
         body: &str,
         reply_to: Option<String>,
     ) -> Result<Message> {
+        self.send_formatted(topic_id, body, reply_to, "markdown")
+            .await
+    }
+    pub(crate) async fn send_formatted(
+        &mut self,
+        topic_id: &str,
+        body: &str,
+        reply_to: Option<String>,
+        format: &str,
+    ) -> Result<Message> {
         let topic = self.topic(topic_id)?;
         ensure!(!topic.archived, "topic is archived");
         let message_id = Uuid::new_v4().to_string();
@@ -560,7 +581,7 @@ impl Endpoint {
             topic_title: topic.title,
             created_at: topic.created_at,
             body: body.into(),
-            format: "markdown".into(),
+            format: format.into(),
             reply_to,
         };
         event.validate()?;
@@ -568,7 +589,7 @@ impl Endpoint {
         self.queue_event(&topic.peer_id, event)?;
         Ok(self.db.query_row(
             "SELECT * FROM messages WHERE id=?",
-            [message_id],
+            [&message_id],
             message_row,
         )?)
     }
@@ -746,6 +767,25 @@ impl Endpoint {
             "SELECT m.* FROM messages m JOIN outbox o ON o.message_id=m.id WHERE o.id=? AND o.attempts>=?",
             params![id, MAX_DELIVERY_FAILURES], message_row,
         )?;
+        if message.format == "file" {
+            // Resume the same immutable offer; creating another invitation would
+            // disconnect existing consent and staged chunks from this transfer.
+            let tx = self.db.transaction()?;
+            tx.execute(
+                "UPDATE outbox SET attempts=0,next_attempt=0,last_error=NULL WHERE id=?",
+                [id],
+            )?;
+            tx.execute(
+                "UPDATE messages SET delivery='queued' WHERE id=?",
+                [&message.id],
+            )?;
+            tx.commit()?;
+            return Ok(self.db.query_row(
+                "SELECT * FROM messages WHERE id=?",
+                [&message.id],
+                message_row,
+            )?);
+        }
         self.send_message(&message.topic_id, &message.body, message.reply_to)
             .await
     }
@@ -784,6 +824,7 @@ impl Endpoint {
     }
     /// Retries reuse committed ciphertext. ACK occurs only after durable local commit.
     pub async fn sync(&mut self, force: bool) -> Result<SyncReport> {
+        self.pump_files().await?;
         if self.is_direct() {
             return self.sync_direct(force).await;
         }
@@ -900,6 +941,12 @@ fn apply_event(tx: &Transaction<'_>, env: &Envelope, event: &Event, outgoing: bo
             topic_title,
             created_at,
             ..
+        }
+        | Event::Control {
+            topic_id,
+            topic_title,
+            created_at,
+            ..
         } => (topic_id, topic_title, created_at),
         Event::TopicUpdate {
             topic_id,
@@ -953,6 +1000,17 @@ fn apply_event(tx: &Transaction<'_>, env: &Envelope, event: &Event, outgoing: bo
                 )?,
                 "message id collision"
             );
+            let mut stored_format = if format == "markdown" {
+                "markdown"
+            } else {
+                "unknown"
+            };
+            if format == "file" {
+                match chat::apply_file(tx, env, message_id, id, body, outgoing) {
+                    Ok(()) => return Ok(()),
+                    Err(_) => stored_format = "unknown",
+                }
+            }
             tx.execute(
                 "INSERT INTO messages VALUES(?,?,?,?,?,?,?,?)",
                 params![
@@ -961,8 +1019,54 @@ fn apply_event(tx: &Transaction<'_>, env: &Envelope, event: &Event, outgoing: bo
                     env.from,
                     env.timestamp,
                     body,
-                    format,
+                    stored_format,
                     reply_to,
+                    if outgoing { "queued" } else { "received" }
+                ],
+            )?;
+            tx.execute(
+                "UPDATE topics SET updated_at=MAX(updated_at,?) WHERE id=?",
+                params![env.timestamp, id],
+            )?;
+        }
+        Event::Control {
+            operation_id, body, ..
+        } => {
+            ensure!(
+                !tx.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM messages WHERE id=?)",
+                    [operation_id],
+                    |r| r.get::<_, bool>(0)
+                )?,
+                "control operation ID collides with history"
+            );
+            if let Ok(s) = cipherwhisper_protocol::special::Special::parse(body) {
+                tx.execute_batch("SAVEPOINT chat_operation")?;
+                match chat::apply(tx, env, operation_id, id, &s, outgoing) {
+                    Ok(()) => {
+                        tx.execute_batch("RELEASE chat_operation")?;
+                        return Ok(());
+                    }
+                    Err(e) => {
+                        tx.execute_batch("ROLLBACK TO chat_operation; RELEASE chat_operation")?;
+                        if e.downcast_ref::<rusqlite::Error>()
+                            .is_some_and(|e| matches!(e, rusqlite::Error::QueryReturnedNoRows))
+                        {
+                            return Err(e);
+                        }
+                    }
+                }
+            }
+            // Preserve only inert unknown controls for inspection. Ordinary
+            // message bodies never enter this branch, regardless of their text.
+            tx.execute(
+                "INSERT INTO messages VALUES(?,?,?,?,?,'control.unknown',NULL,?)",
+                params![
+                    operation_id,
+                    id,
+                    env.from,
+                    env.timestamp,
+                    body,
                     if outgoing { "queued" } else { "received" }
                 ],
             )?;

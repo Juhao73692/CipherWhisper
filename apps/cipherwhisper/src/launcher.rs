@@ -871,6 +871,7 @@ pub async fn run(args: Args) -> Result<()> {
         "/p2p/peers/{*rest}",
         "/devices/{*rest}",
         "/device-pending/{*rest}",
+        "/files/{id}/download",
     ]
     .into_iter()
     .fold(app, |app, path| app.route(path, get(proxy).post(proxy)))
