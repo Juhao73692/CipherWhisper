@@ -1,11 +1,12 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte';
   import Markdown from './Markdown.svelte';
+  import ChatContent from './ChatContent.svelte';
   import Setup from './Setup.svelte';
   import Settings from './Settings.svelte';
   import About from './About.svelte';
   import Brand from './Brand.svelte';
-  import { api, setToken } from './api';
+  import { api, setToken, download, uiVisible } from './api';
   import type {
     Card,
     Topic,
@@ -19,6 +20,9 @@
     LauncherStatus,
     BuildInfo,
     UnreadTopic,
+    MessagePage,
+    MessageChanges,
+    Draft,
   } from './types';
   let buildInfo = $state<BuildInfo | null>(null);
   let unlocked = $state(false),
@@ -44,6 +48,43 @@
     reply = $state<Message | null>(null),
     preview = $state(false);
   let drafts: Record<string, { body: string; reply: Message | null }> = {};
+  let historyRevision = 0;
+  let topicMetaEpoch = 0;
+  let scrollEpoch = 0;
+  let olderCursor = $state<string | null>(null),
+    hasOlder = $state(false),
+    loadingHistory = $state(false),
+    topicLoading = $state(false);
+  let firstUnreadId = $state(''),
+    newMessageCount = $state(0),
+    viewAtLatest = $state(true);
+  let draftTimer: ReturnType<typeof setTimeout> | undefined;
+  let draftRevision = Date.now(),
+    draftStatus = $state('');
+  let editingId = $state(''),
+    editBody = $state(''),
+    withdrawId = $state('');
+  let metaTags = $state(''),
+    metaStatus = $state<'open' | 'active' | 'resolved'>('open');
+  let tagFilter = $state('');
+  const topicStatuses: Record<string, string> = {
+    open: '待讨论',
+    active: '进行中',
+    resolved: '已解决',
+  };
+  $effect(() => {
+    if (!unlocked || !topicId || topicLoading) return;
+    const id = topicId,
+      body = draft,
+      replyTo = reply?.id || null;
+    clearTimeout(draftTimer);
+    if (new TextEncoder().encode(body).length > 65536) {
+      draftStatus = '草稿超过保存上限';
+      return;
+    }
+    draftStatus = '保存中…';
+    draftTimer = setTimeout(() => void persistDraft(id, body, replyTo), 400);
+  });
   let status = $state<Status | null>(null),
     outbox = $state<Outbox[]>([]),
     connectionError = $state('');
@@ -118,9 +159,14 @@
   let unreadTopicIds = $derived(new Set(unread.map((item) => item.topicId)));
   let unreadPeerIds = $derived(new Set(unread.map((item) => item.peerId)));
   let visibleTopics = $derived(
-    topics.filter(
-      (t) => t.peerId === peerId && (includeArchived || !t.archived || unreadTopicIds.has(t.id)),
-    ),
+    topics
+      .filter(
+        (t) =>
+          t.peerId === peerId &&
+          (includeArchived || !t.archived || unreadTopicIds.has(t.id)) &&
+          (!tagFilter || t.tags?.includes(tagFilter)),
+      )
+      .sort((a, b) => Number(!!b.pinned) - Number(!!a.pinned) || b.updatedAt - a.updatedAt),
   );
   let draftsBytes = $derived(new TextEncoder().encode(draft).length);
   let issue = $derived(
@@ -151,6 +197,8 @@
     error = e instanceof Error ? e.message : String(e);
   };
   function lock() {
+    saveDraft(true);
+    clearTimeout(draftTimer);
     tokenInput = '';
     setToken('');
     unlocked = false;
@@ -166,6 +214,13 @@
     draft = '';
     reply = null;
     drafts = {};
+    draftStatus = '';
+    firstUnreadId = '';
+    newMessageCount = 0;
+    editingId = '';
+    withdrawId = '';
+    olderCursor = null;
+    hasOlder = false;
     results = [];
     cardText = '';
     query = '';
@@ -234,6 +289,7 @@
     if (busy) return;
     busy = true;
     try {
+      await flushDraft();
       await api('/launcher/stop', {});
       lock();
     } catch (e) {
@@ -246,6 +302,7 @@
     if (busy) return;
     busy = true;
     try {
+      await flushDraft();
       await api('/launcher/quit', {});
       lock();
       exited = true;
@@ -256,12 +313,10 @@
     }
   }
   async function refresh() {
-    if (!unlocked || refreshing) return;
+    if (!unlocked || refreshing || topicLoading || loadingHistory) return;
     refreshing = true;
-    const chosen = topicId,
-      bottom = historyElement
-        ? historyElement.scrollHeight - historyElement.scrollTop - historyElement.clientHeight < 100
-        : true;
+    const chosen = topicId;
+    const metaEpoch = topicMetaEpoch;
     try {
       const [p, t, s, o, u] = await Promise.all([
         api<Card[]>('/peers'),
@@ -276,23 +331,64 @@
           : [];
       if (!unlocked) return;
       peers = p;
-      topics = t;
+      if (metaEpoch === topicMetaEpoch) topics = t;
       unread = u;
       status = s;
       peerRoutes = routes;
       outbox = o;
       if (modal === 'devices') await loadDevices();
       connectionError = '';
+      if (draftStatus === '草稿保存失败，将重试' && chosen)
+        void persistDraft(chosen, draft, reply?.id || null);
       if (!peerId && p.length) {
         peerId = p[0].user_id;
         pane = 'topics';
       }
       if (chosen) {
-        const history = await api<Message[]>(`/topics/${encodeURIComponent(chosen)}/messages`);
+        const updates = await api<MessageChanges>(
+          `/topics/${encodeURIComponent(chosen)}/changes?since=${historyRevision}`,
+        );
         if (unlocked && topicId === chosen) {
-          messages = history;
-          if (bottom) await scrollBottom();
-          await markVisibleRead(chosen, history);
+          // The user may have scrolled while the network request was in flight.
+          const bottom =
+            !historyElement ||
+            historyElement.scrollHeight - historyElement.scrollTop - historyElement.clientHeight <
+              100;
+          const position = historyElement?.scrollTop || 0,
+            epoch = scrollEpoch;
+          const maxSequence = Math.max(
+            0,
+            ...messages.map((m) =>
+              m.sequence && m.sequence < Number.MAX_SAFE_INTEGER ? m.sequence : 0,
+            ),
+          );
+          let arrived = 0;
+          for (const message of updates.items) {
+            const index = messages.findIndex((m) => m.id === message.id);
+            if (reply?.id === message.id) reply = message;
+            if (index >= 0) messages = messages.map((m) => (m.id === message.id ? message : m));
+            else if ((message.sequence || 0) > maxSequence) {
+              if (viewAtLatest) messages = [...messages, message];
+              if (message.senderId !== self?.user_id) {
+                arrived++;
+                if (!firstUnreadId) firstUnreadId = message.id;
+              }
+            }
+          }
+          messages = [...messages].sort(
+            (a, b) =>
+              (a.sequence || Number.MAX_SAFE_INTEGER) - (b.sequence || Number.MAX_SAFE_INTEGER),
+          );
+          historyRevision = updates.revision;
+          await tick();
+          const follow =
+            bottom &&
+            viewAtLatest &&
+            epoch === scrollEpoch &&
+            Math.abs((historyElement?.scrollTop || 0) - position) < 1;
+          if (follow && historyElement) historyElement.scrollTop = historyElement.scrollHeight;
+          else if (arrived) newMessageCount += arrived;
+          await markVisibleRead(chosen, messages);
         }
       }
     } catch (e) {
@@ -301,19 +397,54 @@
       refreshing = false;
     }
   }
-  function saveDraft() {
-    if (topicId) drafts[topicId] = { body: draft, reply };
+  async function persistDraft(id: string, body: string, replyTo: string | null, keepalive = false) {
+    const revision = ++draftRevision > Date.now() ? draftRevision : (draftRevision = Date.now());
+    try {
+      await api(`/topics/${encodeURIComponent(id)}/draft`, { body, replyTo, revision }, keepalive);
+      if (unlocked && topicId === id && draft === body && (reply?.id || null) === replyTo)
+        draftStatus = body || replyTo ? '草稿已保存' : '';
+    } catch (e) {
+      if (unlocked && topicId === id) draftStatus = '草稿保存失败，将重试';
+    }
+  }
+  function saveDraft(keepalive = false) {
+    if (topicId && unlocked && !topicLoading) {
+      drafts[topicId] = { body: draft, reply };
+      clearTimeout(draftTimer);
+      void persistDraft(topicId, draft, reply?.id || null, keepalive);
+    }
+  }
+  async function flushDraft() {
+    if (topicId && unlocked && !topicLoading) {
+      clearTimeout(draftTimer);
+      await persistDraft(topicId, draft, reply?.id || null);
+    }
   }
   async function markVisibleRead(id: string, history: Message[]) {
-    const last = unread.find((item) => item.topicId === id)?.lastMessageId;
-    if (!last || reading.has(id) || !history.some((message) => message.id === last)) return;
+    if (!unread.some((item) => item.topicId === id) || reading.has(id)) return;
     await tick();
-    if (!unlocked || topicId !== id || pane !== 'conversation' || modal || document.hidden) return;
-    const element = document.getElementById(`message-${last}`);
-    if (!element || !historyElement) return;
-    const bounds = element.getBoundingClientRect();
+    if (
+      !unlocked ||
+      topicId !== id ||
+      pane !== 'conversation' ||
+      modal ||
+      !uiVisible() ||
+      !historyElement
+    )
+      return;
     const viewport = historyElement.getBoundingClientRect();
-    if (bounds.top >= viewport.bottom || bounds.bottom <= viewport.top) return;
+    const visible = history.filter(
+      (message) =>
+        message.senderId !== self?.user_id &&
+        (() => {
+          const element = document.getElementById(`message-${message.id}`);
+          if (!element) return false;
+          const bounds = element.getBoundingClientRect();
+          return bounds.top < viewport.bottom && bounds.bottom > viewport.top;
+        })(),
+    );
+    const last = visible.at(-1)?.id;
+    if (!last) return;
     reading.add(id);
     try {
       const updated = await api<UnreadTopic[]>(`/topics/${encodeURIComponent(id)}/read`, {
@@ -329,6 +460,7 @@
   function selectPeer(id: string) {
     saveDraft();
     peerId = id;
+    tagFilter = '';
     topicId = '';
     messages = [];
     draft = '';
@@ -339,8 +471,19 @@
   async function selectTopic(id: string) {
     saveDraft();
     topicId = id;
+    topicLoading = true;
     const topic = topics.find((t) => t.id === id);
-    if (topic) peerId = topic.peerId;
+    if (topic) {
+      peerId = topic.peerId;
+      metaTags = (topic.tags || []).join(', ');
+      metaStatus = topic.status || 'open';
+    }
+    firstUnreadId = unread.find((u) => u.topicId === id)?.firstMessageId || '';
+    newMessageCount = 0;
+    viewAtLatest = true;
+    editingId = '';
+    withdrawId = '';
+    draftStatus = '';
     draft = drafts[id]?.body || '';
     reply = drafts[id]?.reply || null;
     messages = [];
@@ -348,29 +491,110 @@
     pane = 'conversation';
     error = '';
     try {
-      const history = await api<Message[]>(`/topics/${encodeURIComponent(id)}/messages`);
+      const [page, saved] = await Promise.all([
+        api<MessagePage>(`/topics/${encodeURIComponent(id)}/page`),
+        drafts[id] ? Promise.resolve(null) : api<Draft>(`/topics/${encodeURIComponent(id)}/draft`),
+      ]);
       if (unlocked && topicId === id) {
-        messages = history;
+        messages = page.items;
+        olderCursor = page.olderCursor;
+        hasOlder = page.hasMore;
+        historyRevision = page.revision;
+        if (saved) {
+          draft = saved.body;
+          reply = saved.replyTo
+            ? messages.find((m) => m.id === saved.replyTo) ||
+              ({ id: saved.replyTo, body: '回复消息' } as Message)
+            : null;
+        }
+        topicLoading = false;
         await scrollBottom();
-        await markVisibleRead(id, history);
+        await markVisibleRead(id, messages);
       }
     } catch (e) {
       fail(e);
+    } finally {
+      if (topicId === id) topicLoading = false;
     }
+  }
+  async function loadOlder() {
+    if (!olderCursor || loadingHistory) return;
+    const id = topicId,
+      cursor = olderCursor;
+    loadingHistory = true;
+    const height = historyElement?.scrollHeight || 0,
+      top = historyElement?.scrollTop || 0;
+    try {
+      const page = await api<MessagePage>(
+        `/topics/${encodeURIComponent(id)}/page?before=${encodeURIComponent(cursor)}`,
+      );
+      if (topicId === id && unlocked) {
+        messages = [
+          ...page.items.filter((m) => !messages.some((old) => old.id === m.id)),
+          ...messages,
+        ];
+        olderCursor = page.olderCursor;
+        hasOlder = page.hasMore;
+        await tick();
+        if (historyElement) historyElement.scrollTop = top + historyElement.scrollHeight - height;
+      }
+    } catch (e) {
+      fail(e);
+    } finally {
+      loadingHistory = false;
+    }
+  }
+  async function jumpToMessage(id: string) {
+    if (!messages.some((m) => m.id === id)) {
+      const topic = topicId;
+      const page = await api<MessagePage>(
+        `/topics/${encodeURIComponent(topic)}/page?around=${encodeURIComponent(id)}`,
+      );
+      if (!unlocked || topicId !== topic) return;
+      messages = page.items;
+      olderCursor = page.olderCursor;
+      hasOlder = page.hasMore;
+      viewAtLatest = false;
+    }
+    await tick();
+    document.getElementById(`message-${id}`)?.scrollIntoView({ block: 'center' });
+  }
+  async function showLatest() {
+    const id = topicId;
+    const page = await api<MessagePage>(`/topics/${encodeURIComponent(id)}/page`);
+    if (!unlocked || topicId !== id) return;
+    messages = page.items;
+    olderCursor = page.olderCursor;
+    hasOlder = page.hasMore;
+    historyRevision = page.revision;
+    viewAtLatest = true;
+    newMessageCount = 0;
+    await scrollBottom();
+    await markVisibleRead(id, messages);
+  }
+  function historyScroll() {
+    scrollEpoch++;
+    if (
+      viewAtLatest &&
+      historyElement &&
+      historyElement.scrollHeight - historyElement.scrollTop - historyElement.clientHeight < 100
+    )
+      newMessageCount = 0;
+    void markVisibleRead(topicId, messages);
   }
   async function scrollBottom() {
     await tick();
     if (historyElement) historyElement.scrollTop = historyElement.scrollHeight;
   }
   async function send() {
-    if (!draft.trim() || !activeTopic || sending || draftsBytes > 65536) return;
+    if (!draft.trim() || !activeTopic || sending || topicLoading || draftsBytes > 65536) return;
     const id = topicId,
       body = draft,
       replyTo = reply?.id;
     sending = true;
     error = '';
     try {
-      const message = await api<Message>(`/topics/${encodeURIComponent(id)}/messages`, {
+      await api<Message>(`/topics/${encodeURIComponent(id)}/messages`, {
         body,
         ...(replyTo ? { reply_to: replyTo } : {}),
       });
@@ -381,10 +605,14 @@
           draft = '';
           reply = null;
         }
-        if (!messages.some((m) => m.id === message.id)) messages = [...messages, message];
+        saveDraft();
         preview = false;
         await scrollBottom();
-      } else if (drafts[id]?.body === body) delete drafts[id];
+      } else if (drafts[id]?.body === body) {
+        drafts[id] = { body: '', reply: null };
+        await persistDraft(id, '', null);
+      }
+      if (topicId === id) await showLatest();
       await refresh();
     } catch (e) {
       fail(e);
@@ -536,7 +764,7 @@
     modal = null;
     await selectTopic(message.topicId);
     await tick();
-    document.getElementById(`message-${message.id}`)?.scrollIntoView({ block: 'center' });
+    await jumpToMessage(message.id);
   }
   function showSource(id: string) {
     const next = new Set(sourceIds);
@@ -658,6 +886,122 @@
       busy = false;
     }
   }
+  async function special(kind: string, data: Record<string, unknown>) {
+    if (sending || !activeTopic) return;
+    const id = topicId;
+    sending = true;
+    error = '';
+    try {
+      if (kind === 'topic.meta') topicMetaEpoch++;
+      await api(`/topics/${encodeURIComponent(id)}/special`, { version: 1, kind, data });
+      if (kind === 'topic.meta') {
+        const updated = await api<Topic[]>('/topics');
+        topicMetaEpoch++;
+        if (unlocked) topics = updated;
+      }
+      await refresh();
+    } catch (e) {
+      fail(e);
+      throw e;
+    } finally {
+      sending = false;
+    }
+  }
+  async function editMessage(message: Message) {
+    try {
+      await special('message.edit', { messageId: message.id, body: editBody });
+      editingId = '';
+    } catch {
+      /* error shown */
+    }
+  }
+  async function withdrawMessage(message: Message) {
+    try {
+      await special('message.withdraw', { messageId: message.id });
+      withdrawId = '';
+    } catch {
+      /* error shown */
+    }
+  }
+  async function updateMeta(pinned?: boolean) {
+    if (!activeTopic) return;
+    const onlyPin = pinned !== undefined;
+    try {
+      await special('topic.meta', {
+        pinned: pinned ?? activeTopic.pinned ?? false,
+        tags: onlyPin
+          ? activeTopic.tags || []
+          : [
+              ...new Set(
+                metaTags
+                  .split(/[,，]/)
+                  .map((t) => t.trim())
+                  .filter(Boolean),
+              ),
+            ],
+        status: onlyPin ? activeTopic.status || 'open' : metaStatus,
+      });
+    } catch {
+      /* error shown */
+    }
+  }
+  function openTopicOptions(event: Event) {
+    const details = (event.currentTarget as HTMLElement).parentElement as HTMLDetailsElement;
+    if (!details.open && activeTopic) {
+      metaTags = (activeTopic.tags || []).join(', ');
+      metaStatus = activeTopic.status || 'open';
+    }
+  }
+  async function acceptFile(message: Message) {
+    if (!message.file) return;
+    try {
+      await special('file.accept', { fileId: message.file.fileId, offerId: message.id });
+    } catch {
+      /* error shown */
+    }
+  }
+  async function downloadFile(message: Message) {
+    if (!message.file) return;
+    try {
+      await download(`/files/${encodeURIComponent(message.id)}/download`, message.file.name);
+    } catch (e) {
+      fail(e);
+    }
+  }
+  async function uploadFile(event: Event) {
+    const input = event.target as HTMLInputElement,
+      file = input.files?.[0];
+    input.value = '';
+    if (!file || sending || !topicId) return;
+    if (file.size > 16 * 1024 * 1024) {
+      error = '文件不能超过 16 MiB';
+      return;
+    }
+    const id = topicId;
+    sending = true;
+    error = '';
+    try {
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      const chunks: string[] = [];
+      for (let offset = 0; offset < bytes.length; offset += 65536)
+        chunks.push(
+          Array.from(bytes.subarray(offset, offset + 65536), (b) =>
+            b.toString(16).padStart(2, '0'),
+          ).join(''),
+        );
+      const hex = chunks.join('');
+      await api(`/topics/${encodeURIComponent(id)}/files`, {
+        name: file.name,
+        mime: file.type || 'application/octet-stream',
+        hex,
+      });
+      if (topicId === id) await showLatest();
+    } catch (e) {
+      fail(e);
+    } finally {
+      sending = false;
+    }
+  }
   async function replyTo(message: Message) {
     reply = message;
     await tick();
@@ -669,6 +1013,8 @@
       error = '本机授权已失效，请重新解锁。';
     };
     window.addEventListener('cipherwhisper:locked', locked);
+    const exiting = () => saveDraft(true);
+    window.addEventListener('beforeunload', exiting);
     void fetch('/ui/build', { credentials: 'omit', cache: 'no-store' })
       .then(async (response) => {
         if (response.ok) buildInfo = await response.json();
@@ -720,16 +1066,20 @@
         });
     })();
     const timer = setInterval(() => {
-      if (!document.hidden) void refresh();
+      if (uiVisible()) void refresh();
     }, 500);
     const visible = () => {
-      if (!document.hidden) void refresh();
+      if (uiVisible()) void refresh();
     };
     document.addEventListener('visibilitychange', visible);
+    window.addEventListener('cipherwhisper:visibility', visible);
     return () => {
       clearInterval(timer);
       document.removeEventListener('visibilitychange', visible);
+      window.removeEventListener('cipherwhisper:visibility', visible);
       window.removeEventListener('cipherwhisper:locked', locked);
+      window.removeEventListener('beforeunload', exiting);
+      clearTimeout(draftTimer);
       setToken('');
     };
   });
@@ -886,16 +1236,30 @@
         >
       </div>
       {#if activePeer}<p class="topic-subtitle">每一件事，一段独立对话。</p>{/if}
+      {#if activePeer && topics.some((t) => t.peerId === peerId && t.tags?.length)}
+        <label class="tag-filter"
+          >标签 <select aria-label="按标签筛选话题" bind:value={tagFilter}
+            ><option value="">全部</option>{#each [...new Set(topics
+                  .filter((t) => t.peerId === peerId)
+                  .flatMap((t) => t.tags || []))] as tag}<option value={tag}>{tag}</option
+              >{/each}</select
+          ></label
+        >
+      {/if}
       <div class="topic-list">
         {#each visibleTopics as topic (topic.id)}
           <button
             class="topic-item"
             class:active={topicId === topic.id}
             onclick={() => selectTopic(topic.id)}
-            ><span class="topic-symbol">{topic.archived ? '□' : '#'}</span><span class="topic-copy"
+            ><span class="topic-symbol">{topic.pinned ? '📌' : topic.archived ? '□' : '#'}</span
+            ><span class="topic-copy"
               ><strong>{topic.title}</strong><small
-                >{topic.archived ? '已归档 · ' : ''}{date(topic.updatedAt)}</small
-              ></span
+                >{topic.archived ? '已归档 · ' : ''}{topicStatuses[topic.status] || '待讨论'} · {date(
+                  topic.updatedAt,
+                )}</small
+              >{#if topic.tags?.length}<span class="topic-tags">{topic.tags.join(' · ')}</span
+                >{/if}</span
             >{#if unreadTopicIds.has(topic.id)}<span
                 class="unread-dot"
                 role="img"
@@ -960,6 +1324,37 @@
             </div>
           </div>
           <div class="header-actions">
+            <button
+              class="secondary"
+              disabled={sending || activeTopic.archived}
+              onclick={() => updateMeta(!activeTopic!.pinned)}
+              >{activeTopic.pinned ? '取消置顶' : '置顶'}</button
+            >
+            <details class="topic-options">
+              <summary onclick={openTopicOptions}>话题设置</summary>
+              <div>
+                <label
+                  >标签<input
+                    aria-label="话题标签"
+                    bind:value={metaTags}
+                    placeholder="用逗号分隔"
+                    maxlength="500"
+                  /></label
+                >
+                <label
+                  >状态<select aria-label="话题状态" bind:value={metaStatus}
+                    ><option value="open">待讨论</option><option value="active">进行中</option
+                    ><option value="resolved">已解决</option></select
+                  ></label
+                >
+                <p class="hint">置顶、标签和状态会同步给对方及自己的设备。</p>
+                <button
+                  class="secondary"
+                  disabled={sending || activeTopic.archived}
+                  onclick={() => updateMeta()}>保存话题设置</button
+                >
+              </div>
+            </details>
             <span class="secure-badge">◇ E2EE</span><button
               class="archive-action"
               aria-label={activeTopic.archived ? '恢复话题' : '归档话题'}
@@ -977,16 +1372,25 @@
             >
           </div>
         </header>
-        <div
-          class="history"
-          bind:this={historyElement}
-          onscroll={() => void markVisibleRead(topicId, messages)}
-        >
-          {#if !messages.length}<div class="empty-conversation">
+        <div class="history" bind:this={historyElement} onscroll={historyScroll}>
+          {#if hasOlder}<button
+              class="history-more secondary"
+              disabled={loadingHistory}
+              onclick={loadOlder}>{loadingHistory ? '加载中…' : '加载更早的消息'}</button
+            >{/if}
+          {#if firstUnreadId && !messages.some((m) => m.id === firstUnreadId)}<button
+              class="history-more secondary"
+              onclick={() => void jumpToMessage(firstUnreadId).catch(fail)}
+              >跳到第一条未读消息</button
+            >{/if}
+          {#if !messages.length && !topicLoading}<div class="empty-conversation">
               <span>✧</span>
               <h2>给这个话题写下第一句。</h2>
             </div>{/if}
           {#each messages as message (message.id)}
+            {#if message.id === firstUnreadId}<div class="unread-divider" role="separator">
+                以下为未读消息
+              </div>{/if}
             <article
               id={`message-${message.id}`}
               class="message"
@@ -1005,27 +1409,62 @@
                     >{date(message.timestamp)}</time
                   ><span class="delivery" title="送达表示对方端点确认接收，不代表人已阅读"
                     >{delivery[message.delivery] || message.delivery}</span
-                  >
+                  >{#if message.edited}<small class="edited-label">已编辑</small>{/if}
                 </div>
                 {#if message.replyTo}<button
                     class="reply-quote"
-                    onclick={() =>
-                      document
-                        .getElementById(`message-${message.replyTo}`)
-                        ?.scrollIntoView({ block: 'center' })}
+                    onclick={() => void jumpToMessage(message.replyTo!).catch(fail)}
                     >↳ {messages.find((m) => m.id === message.replyTo)?.body.slice(0, 120) ||
                       '回复一条消息'}</button
                   >{/if}
-                {#if sourceIds.has(message.id)}<pre
-                    class="source-text">{message.body}</pre>{:else}<Markdown
-                    source={message.body}
-                  />{/if}
+                <ChatContent
+                  {message}
+                  source={sourceIds.has(message.id)}
+                  mine={message.senderId === self?.user_id}
+                  busy={sending || activeTopic.archived}
+                  accept={acceptFile}
+                  {downloadFile}
+                />
+                {#if editingId === message.id}<div class="edit-message">
+                    <textarea aria-label="编辑消息正文" bind:value={editBody}></textarea><button
+                      class="secondary"
+                      disabled={sending ||
+                        !editBody.trim() ||
+                        new TextEncoder().encode(editBody).length > 65536}
+                      onclick={() => editMessage(message)}>保存修改</button
+                    ><button class="text-button" onclick={() => (editingId = '')}>取消编辑</button>
+                  </div>{/if}
+                {#if withdrawId === message.id}<div class="withdraw-confirm">
+                    撤回后将清除双方聊天历史中的正文。<button
+                      class="secondary"
+                      disabled={sending}
+                      onclick={() => withdrawMessage(message)}>确认撤回</button
+                    ><button class="text-button" onclick={() => (withdrawId = '')}>取消</button>
+                  </div>{/if}
                 <div class="message-actions">
-                  <button onclick={() => replyTo(message)} disabled={activeTopic.archived}
-                    >↳ 回复</button
+                  <button
+                    onclick={() => replyTo(message)}
+                    disabled={activeTopic.archived || message.withdrawn}>↳ 回复</button
                   ><button onclick={() => showSource(message.id)}
                     >{sourceIds.has(message.id) ? '查看渲染' : '查看原文'}</button
                   >
+                  {#if message.senderId === self?.user_id && ['markdown', 'markdown.edited'].includes(message.format) && !message.specialKind}
+                    <button
+                      disabled={sending || activeTopic.archived}
+                      onclick={() => {
+                        editingId = message.id;
+                        editBody = message.body;
+                        withdrawId = '';
+                      }}>编辑</button
+                    >
+                    <button
+                      disabled={sending || activeTopic.archived}
+                      onclick={() => {
+                        withdrawId = message.id;
+                        editingId = '';
+                      }}>撤回</button
+                    >
+                  {/if}
                 </div>
               </div>
               {#if message.delivery === 'paused' && message.senderId === self?.user_id}
@@ -1040,6 +1479,11 @@
             </article>
           {/each}
         </div>
+        {#if newMessageCount || !viewAtLatest}<button
+            class="new-messages secondary"
+            onclick={() => void showLatest().catch(fail)}
+            >{newMessageCount ? `有 ${newMessageCount} 条新消息 ↓` : '回到最新消息 ↓'}</button
+          >{/if}
         <div class="composer-area">
           {#if error}<div class="error" role="alert">
               {error}<button class="icon" aria-label="关闭错误" onclick={() => (error = '')}
@@ -1067,6 +1511,14 @@
                   >
                 </div>{/if}
               <div class="editor-tabs">
+                <label class="attach-button"
+                  >＋ 文件<input
+                    type="file"
+                    aria-label="发送文件"
+                    disabled={sending || topicLoading}
+                    onchange={uploadFile}
+                  /></label
+                >
                 <button class:active={!preview} onclick={() => (preview = false)}>编写</button
                 ><button class:active={preview} onclick={() => (preview = true)}>预览</button>
               </div>
@@ -1078,6 +1530,7 @@
                   aria-label="消息正文"
                   bind:this={editor}
                   bind:value={draft}
+                  disabled={topicLoading}
                   placeholder="写下你的想法…"
                   onkeydown={(e) => {
                     if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
@@ -1088,11 +1541,12 @@
               <div class="composer-footer">
                 <span class:over-limit={draftsBytes > 65536}
                   >{draftsBytes > 65536 ? '超过 64 KiB 消息上限' : '⌘ / Ctrl + Enter 发送'}
-                  <span class="draft-count">{draftsBytes.toLocaleString()} B</span></span
+                  <span class="draft-count">{draftStatus} · {draftsBytes.toLocaleString()} B</span
+                  ></span
                 ><button
                   class="primary"
                   onclick={send}
-                  disabled={sending || !draft.trim() || draftsBytes > 65536}
+                  disabled={sending || topicLoading || !draft.trim() || draftsBytes > 65536}
                   >{sending ? '加密入队…' : '发送 ↑'}</button
                 >
               </div>

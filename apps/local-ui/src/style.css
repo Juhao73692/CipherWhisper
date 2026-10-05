@@ -825,7 +825,6 @@ kbd {
   flex: 1;
   overflow: auto;
   padding: 22px 38px 30px;
-  scroll-behavior: smooth;
   min-height: 0;
 }
 .conversation-intro {
@@ -1612,4 +1611,118 @@ kbd {
   font-size: 10px;
   padding: 7px 11px;
   margin-top: 10px;
+}
+
+/* Chat controls remain local; operation messages do not appear in the history. */
+.unread-divider {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 20px 0;
+  color: var(--accent, #647b66);
+  font-size: 12px;
+}
+.unread-divider::before,
+.unread-divider::after {
+  content: '';
+  height: 1px;
+  background: currentColor;
+  flex: 1;
+  opacity: 0.35;
+}
+.history-more {
+  display: block;
+  margin: 12px auto;
+}
+.new-messages {
+  align-self: center;
+  margin: 8px 0;
+  z-index: 2;
+}
+.topic-tags {
+  display: block;
+  font-size: 11px;
+  margin-top: 4px;
+  opacity: 0.65;
+}
+.tag-filter {
+  padding: 0 18px 12px;
+  font-size: 12px;
+}
+.tag-filter select {
+  margin-left: 8px;
+  max-width: 160px;
+}
+.topic-options {
+  position: relative;
+  font-size: 12px;
+}
+.topic-options summary {
+  cursor: pointer;
+  white-space: nowrap;
+}
+.topic-options > div {
+  position: absolute;
+  right: 0;
+  top: 30px;
+  width: 260px;
+  z-index: 5;
+  padding: 16px;
+  background: var(--paper, #fffdf8);
+  border: 1px solid var(--line, #d9d5ca);
+  border-radius: 12px;
+  box-shadow: 0 8px 28px #0002;
+}
+.topic-options label {
+  display: block;
+  margin: 8px 0;
+}
+.topic-options input,
+.topic-options select {
+  display: block;
+  width: 100%;
+  margin-top: 5px;
+}
+.attach-button {
+  position: relative;
+  overflow: hidden;
+  cursor: pointer;
+  font-size: 12px;
+  padding: 8px 12px;
+}
+.attach-button input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  opacity: 0;
+  cursor: pointer;
+}
+.edit-message textarea {
+  width: 100%;
+  min-height: 100px;
+  margin: 10px 0;
+}
+.edit-message button,
+.withdraw-confirm button {
+  margin: 4px;
+}
+.withdraw-confirm {
+  font-size: 12px;
+  margin-top: 10px;
+}
+.edited-label {
+  font-size: 11px;
+  opacity: 0.6;
+}
+@media (max-width: 700px) {
+  .conversation-header .secure-badge {
+    display: none;
+  }
+  .header-actions {
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  .topic-options > div {
+    right: -40px;
+  }
 }

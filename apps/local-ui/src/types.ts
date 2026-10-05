@@ -20,6 +20,9 @@ export type Topic = {
   createdAt: number;
   updatedAt: number;
   archived: boolean;
+  pinned: boolean;
+  tags: string[];
+  status: 'open' | 'active' | 'resolved';
 };
 export type Message = {
   id: string;
@@ -27,7 +30,14 @@ export type Message = {
   senderId: string;
   timestamp: number;
   body: string;
-  format: 'markdown';
+  format: 'markdown' | 'markdown.edited' | 'withdrawn' | 'file' | 'unknown';
+  sequence?: number;
+  edited?: boolean;
+  withdrawn?: boolean;
+  special?: Record<string, unknown> | null;
+  specialKind?: string | null;
+  specialError?: string | null;
+  file?: FileView | null;
   replyTo?: string | null;
   delivery: 'queued' | 'sent' | 'delivered' | 'received' | 'failed' | 'paused';
 };
@@ -36,6 +46,7 @@ export type UnreadTopic = {
   peerId: string;
   count: number;
   lastMessageId: string;
+  firstMessageId: string;
 };
 export type Report = {
   sent: number;
@@ -120,3 +131,24 @@ export type LauncherStatus = {
   dataDirectory: string;
   certificateExpires: number | null;
 };
+
+export type FileView = {
+  fileId: string;
+  name: string;
+  mime: string;
+  size: number;
+  sha256: string;
+  state: string;
+  received: number;
+  chunks: number;
+  acceptId: string | null;
+  error: string | null;
+};
+export type MessagePage = {
+  items: Message[];
+  olderCursor: string | null;
+  hasMore: boolean;
+  revision: number;
+};
+export type MessageChanges = { items: Message[]; revision: number; hasMore: boolean };
+export type Draft = { body: string; replyTo: string | null };

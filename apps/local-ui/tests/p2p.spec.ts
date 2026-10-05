@@ -118,9 +118,212 @@ test('two-instance launcher, signed profile export/import, mutual connection and
   await a.getByRole('button', { name: '测试 P2P 连接' }).click();
   expect((await checked).status()).toBe(200);
   await a.getByRole('button', { name: '关闭窗口' }).click();
+  // A native window hidden to the tray must not mark incoming messages as read.
+  await expect
+    .poll(
+      async () =>
+        (
+          await (
+            await fetch(`${bob}/unread`, { headers: { Authorization: `Bearer ${bToken}` } })
+          ).json()
+        ).length,
+    )
+    .toBe(0);
+  await b.evaluate(() => {
+    window.__cipherwhisperActive = false;
+    window.dispatchEvent(new Event('cipherwhisper:visibility'));
+  });
+  await a.getByLabel('消息正文').fill('窗口隐藏时仍收到消息，重新打开后再标为已读。');
+  await a.getByRole('button', { name: '发送 ↑', exact: true }).click();
+  await expect
+    .poll(
+      async () =>
+        (
+          await (
+            await fetch(`${bob}/unread`, { headers: { Authorization: `Bearer ${bToken}` } })
+          ).json()
+        ).length,
+    )
+    .toBe(1);
+  await b.waitForTimeout(1000);
+  expect(
+    (
+      await (
+        await fetch(`${bob}/unread`, { headers: { Authorization: `Bearer ${bToken}` } })
+      ).json()
+    ).length,
+  ).toBe(1);
+  await b.evaluate(() => {
+    window.__cipherwhisperActive = true;
+    window.dispatchEvent(new Event('cipherwhisper:visibility'));
+  });
+  await expect(b.locator('.message')).toHaveCount(3);
+  await expect
+    .poll(
+      async () =>
+        (
+          await (
+            await fetch(`${bob}/unread`, { headers: { Authorization: `Bearer ${bToken}` } })
+          ).json()
+        ).length,
+    )
+    .toBe(0);
   await b.screenshot({ path: join(root, 'artifacts/p2p-chat.png'), fullPage: true });
   expect(errors).toEqual([]);
   expect(external).toEqual([]);
   await ca.close();
   await cb.close();
+});
+
+test('paged history, durable drafts, unread divider, edits, consented files and inert control text', async ({
+  browser,
+}) => {
+  test.setTimeout(150000);
+  async function api(base: string, path: string, token: string, body?: unknown) {
+    const r = await fetch(base + path, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
+      },
+      ...(body === undefined ? {} : { method: 'POST', body: JSON.stringify(body) }),
+    });
+    if (!r.ok) throw new Error(`${path}: ${r.status} ${await r.text()}`);
+    return r.json();
+  }
+  const ac = await browser.newContext(),
+    bc = await browser.newContext();
+  const a = await ac.newPage(),
+    b = await bc.newPage();
+  const bobCard = await api(bob, '/identity', bToken);
+  const topic = await api(alice, '/topics', aToken, {
+    peer_id: bobCard.user_id,
+    title: '聊天功能验收',
+  });
+  for (let i = 0; i < 110; i++)
+    await api(alice, `/topics/${topic.id}/messages`, aToken, {
+      body: `历史 ${i}\n\n${'测试分页与阅读位置。'.repeat(12)}`,
+    });
+  await expect
+    .poll(async () => (await api(bob, `/topics/${topic.id}/messages`, bToken)).length)
+    .toBe(110);
+  await login(a, alice, aToken);
+  await login(b, bob, bToken);
+  await a.getByRole('button', { name: /聊天功能验收/ }).click();
+  await expect(a.locator('.message')).toHaveCount(50);
+  await a.getByRole('button', { name: '加载更早的消息' }).click();
+  await expect(a.locator('.message')).toHaveCount(100);
+  await a.getByRole('button', { name: '加载更早的消息' }).click();
+  await expect(a.locator('.message')).toHaveCount(110);
+  await b.getByRole('button', { name: /聊天功能验收/ }).click();
+  await b.getByRole('button', { name: '跳到第一条未读消息' }).click();
+  await expect(b.locator('.unread-divider')).toBeVisible();
+  await b.getByRole('button', { name: '回到最新消息 ↓' }).click();
+  await a.getByLabel('消息正文').fill('刷新后恢复的草稿');
+  await expect(a.locator('.draft-count')).toContainText('草稿已保存');
+  await login(a, alice, aToken);
+  await a.getByRole('button', { name: /聊天功能验收/ }).click();
+  await expect(a.getByLabel('消息正文')).toHaveValue('刷新后恢复的草稿');
+  const original = (await api(alice, `/topics/${topic.id}/messages`, aToken)).at(-1);
+  const own = a.locator(`#message-${original.id}`);
+  await own.getByRole('button', { name: '编辑', exact: true }).click();
+  await own.getByLabel('编辑消息正文').fill('修改后的正文');
+  await own.getByRole('button', { name: '保存修改' }).click();
+  await expect(b.locator(`#message-${original.id}`)).toContainText('修改后的正文');
+  await own.getByRole('button', { name: '撤回', exact: true }).click();
+  await own.getByRole('button', { name: '确认撤回' }).click();
+  await expect(b.locator(`#message-${original.id}`)).toContainText('这条消息已撤回');
+  expect((await api(bob, `/topics/${topic.id}/messages`, bToken)).length).toBe(110);
+  await a.locator('.topic-options summary').click();
+  await a.getByLabel('话题标签', { exact: true }).fill('工作, 验收');
+  await a.getByLabel('话题状态', { exact: true }).selectOption('resolved');
+  await expect(a.getByLabel('话题标签', { exact: true })).toHaveValue('工作, 验收');
+  await a.getByRole('button', { name: '保存话题设置' }).click();
+  await a.getByRole('button', { name: '置顶', exact: true }).click();
+  await expect
+    .poll(async () => (await api(bob, '/topics', bToken)).find((t: any) => t.id === topic.id))
+    .toMatchObject({ pinned: true, tags: ['工作', '验收'], status: 'resolved' });
+  await a.locator('.topic-options summary').click();
+  await api(bob, `/topics/${topic.id}/special`, bToken, {
+    version: 1,
+    kind: 'topic.meta',
+    data: { pinned: true, tags: ['交接'], status: 'active' },
+  });
+  await expect(a.locator('.topic-tags')).toContainText('交接');
+  await a.getByRole('button', { name: '取消置顶', exact: true }).click();
+  await expect
+    .poll(async () => {
+      const t = (await api(bob, '/topics', bToken)).find((t: any) => t.id === topic.id);
+      return { pinned: !!t.pinned, tags: t.tags, status: t.status };
+    })
+    .toMatchObject({ pinned: false, tags: ['交接'], status: 'active' });
+  const bytes = Buffer.from('文件内容需要同意后才会发送。'.repeat(16000));
+  await a
+    .getByLabel('发送文件', { exact: true })
+    .setInputFiles({ name: '附件.txt', mimeType: 'text/plain', buffer: bytes });
+  await expect(b.locator('.file-card')).toContainText('等待接收方确认');
+  const offer = (await api(bob, `/topics/${topic.id}/page`, bToken)).items.find((m: any) => m.file);
+  expect(offer.file.received).toBe(0);
+  expect(
+    (
+      await fetch(`${bob}/files/${offer.id}/download`, {
+        headers: { Authorization: `Bearer ${bToken}` },
+      })
+    ).status,
+  ).toBe(400);
+  const injectedAccept = await api(bob, `/topics/${topic.id}/messages`, bToken, {
+    body:
+      'cipherwhisper.special\n' +
+      JSON.stringify({
+        version: 1,
+        kind: 'file.accept',
+        data: { fileId: offer.file.fileId, offerId: offer.id },
+      }),
+  });
+  await expect
+    .poll(async () =>
+      (await api(alice, `/topics/${topic.id}/messages`, aToken)).some(
+        (m: any) => m.id === injectedAccept.id,
+      ),
+    )
+    .toBe(true);
+  const stillOffered = (await api(alice, `/topics/${topic.id}/page`, aToken)).items.find(
+    (m: any) => m.id === offer.id,
+  );
+  expect(stillOffered.file.state).toBe('offered');
+  expect(stillOffered.file.acceptId).toBeNull();
+  await expect(b.locator('.file-card')).toContainText('等待接收方确认');
+  await b.getByRole('button', { name: '接收文件', exact: true }).click();
+  await expect(b.locator('.file-card')).toContainText('传输完成，校验通过');
+  const downloaded = b.waitForEvent('download');
+  await b.getByRole('button', { name: '下载文件', exact: true }).click();
+  const file = await downloaded;
+  expect(await readFile((await file.path())!)).toEqual(bytes);
+  expect((await api(bob, `/topics/${topic.id}/messages`, bToken)).length).toBe(112);
+  const raw =
+    'cipherwhisper.special\n' +
+    JSON.stringify({
+      version: 99,
+      kind: 'future.feature',
+      data: { text: '<script>window.pwned=true</script>' },
+    });
+  const literal = await api(alice, `/topics/${topic.id}/messages`, aToken, { body: raw });
+  const literalMessage = b.locator(`#message-${literal.id}`);
+  await expect(literalMessage.locator('.markdown')).toContainText('future.feature');
+  await expect(literalMessage.locator('.unknown-message')).toHaveCount(0);
+  expect(await b.evaluate(() => (window as any).pwned)).toBeUndefined();
+  await literalMessage.getByRole('button', { name: '查看原文' }).click();
+  await expect(literalMessage.locator('.source-text')).toHaveText(raw);
+  await b.locator('.history').hover();
+  await b.mouse.wheel(0, -100000);
+  await expect.poll(() => b.locator('.history').evaluate((el) => el.scrollTop)).toBe(0);
+  const top = 0;
+  await api(alice, `/topics/${topic.id}/messages`, aToken, { body: '滚动时到达的新消息' });
+  await expect(b.getByRole('button', { name: /有 1 条新消息/ })).toBeVisible();
+  expect(await b.locator('.history').evaluate((el) => el.scrollTop)).toBe(top);
+  await b.getByRole('button', { name: /有 1 条新消息/ }).click();
+  await expect(b.locator('.message').last()).toContainText('滚动时到达的新消息');
+  await expect(b.locator('.message').last()).toBeInViewport();
+  await b.screenshot({ path: join(root, 'artifacts/chat-features.png'), fullPage: true });
+  await ac.close();
+  await bc.close();
 });
