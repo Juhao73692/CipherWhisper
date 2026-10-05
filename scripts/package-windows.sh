@@ -54,13 +54,15 @@ assert struct.unpack_from('<H', data, offset + 24)[0] == 0x20b, 'Expected PE32+'
 assert struct.unpack_from('<H', data, offset + 24 + 68)[0] == 2, 'Expected Windows GUI subsystem'
 imports = subprocess.check_output(['llvm-readobj', '--coff-imports', str(binary)], text=True)
 dlls = sorted(set(re.findall(r'Name: (\S+\.dll)', imports, re.IGNORECASE)))
-system = {'advapi32.dll', 'bcrypt.dll', 'bcryptprimitives.dll', 'crypt32.dll', 'dbghelp.dll', 'iphlpapi.dll',
+system = {'advapi32.dll', 'bcrypt.dll', 'bcryptprimitives.dll', 'combase.dll', 'comctl32.dll',
+          'crypt32.dll', 'dbghelp.dll', 'dwmapi.dll', 'gdi32.dll', 'imm32.dll', 'iphlpapi.dll',
           'kernel32.dll', 'msvcrt.dll', 'ncrypt.dll', 'ntdll.dll', 'ole32.dll',
-          'oleaut32.dll', 'secur32.dll', 'shell32.dll', 'ucrtbase.dll', 'user32.dll',
+          'oleaut32.dll', 'secur32.dll', 'shell32.dll', 'shlwapi.dll', 'ucrtbase.dll', 'user32.dll',
           'userenv.dll', 'version.dll', 'winmm.dll', 'ws2_32.dll'}
 assert dlls, 'Cannot verify DLL dependencies'
-assert all(d.lower() in system or d.lower() == 'webview2loader.dll' or d.lower().startswith(('api-ms-win-', 'ext-ms-win-'))
-           for d in dlls), f'Non-system DLLs must be bundled or linked statically: {dlls}'
+unexpected = [d for d in dlls if d.lower() not in system and d.lower() != 'webview2loader.dll'
+              and not d.lower().startswith(('api-ms-win-', 'ext-ms-win-'))]
+assert not unexpected, f'Non-system DLLs must be bundled or linked statically: {unexpected}'
 guides = {'windows.md': 'README.zh-CN.md', 'ui-setup.md': 'SETUP.zh-CN.md',
           'p2p-testing.md': 'P2P.zh-CN.md', 'device-sync.md': 'DEVICES.zh-CN.md',
           'local-ui.md': 'UI.zh-CN.md', 'macos-testing.md': 'RELAY.zh-CN.md'}
@@ -79,6 +81,7 @@ with tempfile.TemporaryDirectory(prefix='cipherwhisper-win-', dir=dist) as temp:
             text = text.replace(f'({old})', f'({new})')
         (stage / destination).write_text(text, encoding='utf-8')
     shutil.copy2('server/domain/ui/third-party-ui.txt', stage / 'THIRD-PARTY-UI.txt')
+    shutil.copy2('LICENSE', stage / 'LICENSE')
     metadata = json.loads(Path('.build-info-state.json').read_text())
     metadata.update(target='x86_64-pc-windows-gnullvm', architecture='amd64', systemDlls=[d for d in dlls if d.lower() != 'webview2loader.dll'], bundledDlls=['WebView2Loader.dll'], webview2RuntimeRequired=True)
     (stage / 'BUILD-INFO.json').write_text(json.dumps(metadata, indent=2) + '\n', encoding='utf-8')

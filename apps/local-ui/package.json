@@ -2,6 +2,7 @@
   "name": "cipherwhisper-local-ui",
   "private": true,
   "version": "0.1.0",
+  "license": "MIT",
   "type": "module",
   "scripts": {
     "build": "vite build && node scripts/notices.mjs",

@@ -34,6 +34,8 @@ cp dist/cipherwhisper dist/CipherWhisper.app/Contents/MacOS/CipherWhisper.new
 mv -f dist/CipherWhisper.app/Contents/MacOS/CipherWhisper.new dist/CipherWhisper.app/Contents/MacOS/CipherWhisper
 rm -f dist/CipherWhisper.app/Contents/MacOS/cipherwhisper-runtime
 cp apps/cipherwhisper/Info.plist dist/CipherWhisper.app/Contents/Info.plist
+mkdir -p dist/CipherWhisper.app/Contents/Resources
+cp LICENSE dist/CipherWhisper.app/Contents/Resources/LICENSE
 codesign --force --sign - --identifier org.cipherwhisper.app dist/CipherWhisper.app
 codesign --verify --strict dist/CipherWhisper.app
 package_guide() {
@@ -49,7 +51,8 @@ package_guide docs/local-ui.md dist/UI.zh-CN.md
 package_guide docs/device-sync.md dist/DEVICES.zh-CN.md
 package_guide docs/ui-setup.md dist/SETUP.zh-CN.md
 cp server/domain/ui/third-party-ui.txt dist/THIRD-PARTY-UI.txt
+cp LICENSE dist/LICENSE
 (cd dist && shasum -a 256 cipherwhisper > SHA256SUMS)
-tar -czf dist/cipherwhisper-macos-universal.tar.gz -C dist CipherWhisper.app cipherwhisper README.zh-CN.md RELAY.zh-CN.md UI.zh-CN.md DEVICES.zh-CN.md SETUP.zh-CN.md THIRD-PARTY-UI.txt SHA256SUMS
+tar -czf dist/cipherwhisper-macos-universal.tar.gz -C dist CipherWhisper.app cipherwhisper README.zh-CN.md RELAY.zh-CN.md UI.zh-CN.md DEVICES.zh-CN.md SETUP.zh-CN.md LICENSE THIRD-PARTY-UI.txt SHA256SUMS
 file dist/cipherwhisper
 ls -lh dist/cipherwhisper dist/cipherwhisper-macos-universal.tar.gz

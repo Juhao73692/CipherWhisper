@@ -146,3 +146,9 @@ npm --prefix apps/local-ui run test:browser
 ```
 
 两个测试界面分别在 `http://127.0.0.1:8790/` 和 `http://127.0.0.1:8791/`。按 Ctrl+C 停止双方并清理临时数据，详见 [直接 P2P 测试指南](docs/p2p-testing.md)。
+
+## License
+
+CipherWhisper 的原创代码与文档采用 [MIT License](LICENSE)，允许商用、修改和再分发；分发时须保留版权声明与许可证正文。软件按原样提供，不附带任何担保。
+
+第三方依赖及其资源遵循各自的许可证；内嵌 UI 的第三方许可声明见 [third-party-ui.txt](server/domain/ui/third-party-ui.txt)，发行包中以 `THIRD-PARTY-UI.txt` 提供。
